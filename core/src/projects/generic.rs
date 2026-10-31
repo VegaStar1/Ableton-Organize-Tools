@@ -154,8 +154,9 @@ fn trim_to_path_start(s: &str) -> &str {
     for i in 0..b.len() {
         let drive = i + 2 < b.len() && b[i].is_ascii_alphabetic() && b[i + 1] == b':' && (b[i + 2] == b'\\' || b[i + 2] == b'/')
             && (i == 0 || !b[i - 1].is_ascii_alphanumeric());
-        let in_url = i >= 8 && &s[i - 8..i] == "file:///";
-        if (drive && !in_url) || s[i..].starts_with("file://") || s[i..].starts_with("\\\\") { best = Some(i); }
+        // Byte comparisons only: `s` may hold Cyrillic, and slicing a str mid-character panics.
+        let in_url = i >= 8 && &b[i - 8..i] == b"file:///";
+        if (drive && !in_url) || b[i..].starts_with(b"file://") || b[i..].starts_with(b"\\\\") { best = Some(i); }
     }
     if let Some(i) = best { return &s[i..]; }
     if b.first() == Some(&b'/') { return s; }
@@ -205,5 +206,16 @@ mod tests {
         let p = extract_audio_paths(d);
         assert!(p.iter().any(|x| x == "D:/Samples/Kick A.wav"), "{p:?}");
         assert!(p.iter().any(|x| x.eq_ignore_ascii_case("C:\\Audio\\snare one.wav")), "{p:?}");
+    }
+}
+#[cfg(test)]
+mod cyrillic_tests {
+    use super::*;
+    #[test]
+    fn cyrillic_paths_do_not_panic() {
+        let d = "текст D:\\Сэмплы\\Бочка 01.wav и file:///D:/Мои%20звуки/snare.wav и Привет/кик.wav".as_bytes();
+        let p = extract_audio_paths(d);
+        assert!(p.iter().any(|x| x == "D:\\Сэмплы\\Бочка 01.wav"), "{p:?}");
+        assert!(p.iter().any(|x| x == "D:/Мои звуки/snare.wav"), "{p:?}");
     }
 }

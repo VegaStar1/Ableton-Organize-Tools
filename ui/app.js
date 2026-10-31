@@ -77,7 +77,7 @@ async function startScan() {
     const vp = visiblePlugins();
     S.selP = (vp.find((p) => p.status !== 'used') || vp[0] || {}).name || null;
     S.selPr = (S.report.projects[0] || {}).id ?? null;
-    await loadKids();
+    try { await loadKids(); } catch (e) { S.kids = []; toast('Не удалось открыть папки сэмплов: ' + e); }
   } catch (e) {
     S.scanning = false;
     S.error = String(e);
@@ -91,8 +91,8 @@ async function loadKids() { S.kids = await invoke('sample_children', { dir: S.di
 function render() {
   const root = $('#root');
   if (S.scanning) { root.innerHTML = scanScreen(); paintProgress(); return; }
+  if (S.error) { root.innerHTML = `<div class="wiz"><div class="wiz-box"><h1>Скан не удался</h1><div class="note bad" style="white-space:pre-wrap;user-select:text">${esc(S.error)}</div><p style="display:flex;gap:8px"><button class="btn pri" data-act="retry">Назад к папкам</button><button class="btn" data-act="copyErr">Скопировать текст ошибки</button></p></div></div>`; return; }
   if (S.view === 'wizard') { root.innerHTML = wizard(); return; }
-  if (S.error) { root.innerHTML = `<div class="wiz"><div class="wiz-box"><h1>Скан не удался</h1><div class="note bad">${esc(S.error)}</div><p><button class="btn pri" data-act="retry">Назад к настройкам</button></p></div></div>`; return; }
   if (!S.report) { root.innerHTML = ''; return; }
   const views = { plugins: [vPlugins, sPlugin], projects: [vProjects, sProject], samples: [vSamples, sSample], dups: [vDups, sDups], trash: [vTrash, sTrash], settings: [vSettings, sSettings] };
   const [main, side] = views[S.view];
@@ -365,7 +365,8 @@ const A = {
   },
   toastAction: () => { if (toast.fn) toast.fn(); $('#toast').hidden = true; },
   rescan: () => { if (S.view === 'wizard') S.step = 2; startScan(); },
-  retry: () => { S.error = null; S.view = 'settings'; render(); },
+  retry: () => { S.error = null; if (!S.report) { S.view = 'wizard'; S.step = 2; } else S.view = 'settings'; render(); },
+  copyErr: () => { navigator.clipboard.writeText(S.error || '').then(() => toast('Скопировано'), () => toast('Выделите текст и скопируйте вручную')); },
   togDaw: (el) => { const v = el.dataset.v, a = S.settings.daws; S.settings.daws = a.includes(v) ? a.filter((x) => x !== v) : [...a, v]; render(); },
   step1: () => { S.step = 1; render(); },
   step2: () => {

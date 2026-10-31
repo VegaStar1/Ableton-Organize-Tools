@@ -162,9 +162,11 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
         let key = pf.path.to_string_lossy().into_owned();
         let use_fp = if pf.daw.support() == SupportLevel::Heuristic { fp } else { 0 };
         let r = if let Some(c) = cache.get(&key, pf.mtime, pf.size, use_fp) { (c.clone(), true, None) } else {
-            match projects::parse(pf, &matcher) {
-                Ok(sc) => (sc, false, None),
-                Err(e) => (ProjectScan::default(), false, Some(format!("{}: {e}", pf.name))),
+            // A broken or unusual project must never stop the whole scan.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| projects::parse(pf, &matcher))) {
+                Ok(Ok(sc)) => (sc, false, None),
+                Ok(Err(e)) => (ProjectScan::default(), false, Some(format!("{}: {e}", pf.path.display()))),
+                Err(_) => (ProjectScan::default(), false, Some(format!("{}: внутренняя ошибка разбора", pf.path.display()))),
             }
         };
         let d = done.fetch_add(1, Ordering::Relaxed) + 1;

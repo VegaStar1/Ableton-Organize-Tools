@@ -96,3 +96,32 @@ fn studio_one_usage_protects_all_loadable_formats() {
     assert!(!vst3.removable, "Studio One usage protects VST3");
     assert!(aax.removable, "AAX is not loadable by Studio One");
 }
+
+#[test]
+fn cyrillic_folders_full_scan() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("Музыка");
+    let pl = root.join("Плагины");
+    fs::create_dir_all(&pl).unwrap();
+    fs::write(pl.join("Массив.vst3"), b"x").unwrap();
+    let smp = root.join("Сэмплы/Барабаны");
+    fs::create_dir_all(&smp).unwrap();
+    fs::write(smp.join("Бочка.wav"), b"k").unwrap();
+    fs::write(smp.join("Лишний.wav"), b"k").unwrap();
+    let songs = root.join("Песни/Трек");
+    fs::create_dir_all(&songs).unwrap();
+    let kick = smp.join("Бочка.wav").to_string_lossy().replace('\\', "/");
+    let mut z = zip::ZipWriter::new(fs::File::create(songs.join("Трек.song")).unwrap());
+    z.start_file("Song/mediapool.xml", zip::write::SimpleFileOptions::default()).unwrap();
+    z.write_all(format!("<Url url=\"file:///{}\"/> плагин Массив тут", kick.trim_start_matches('/')).as_bytes()).unwrap();
+    z.finish().unwrap();
+    write_als(&songs.join("Проект.als"), &format!(r#"<Ableton><FileRef><Path Value="{kick}"/></FileRef></Ableton>"#));
+    let s = Settings { daws: vec![Daw::Ableton, Daw::StudioOne], project_dirs: vec![root.join("Песни")], sample_dirs: vec![root.join("Сэмплы")], extra_plugin_dirs: vec![pl], ..Settings::default() };
+    let a = analysis::run(&s, &|_| {});
+    assert!(a.report.warnings.iter().all(|w| !w.contains("Не удалось")), "{:?}", a.report.warnings);
+    assert_eq!(a.report.projects.len(), 2);
+    let st = |n: &str| a.samples.entries.iter().find(|e| e.slash.ends_with(n)).unwrap().state;
+    assert_eq!(st("Бочка.wav"), UsageState::Used);
+    assert_eq!(st("Лишний.wav"), UsageState::Unused);
+    assert!(!a.samples.children(None).is_empty());
+}

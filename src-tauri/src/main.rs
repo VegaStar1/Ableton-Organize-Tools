@@ -18,6 +18,23 @@ struct App {
 }
 type Shared<'a> = State<'a, Mutex<App>>;
 
+static LAST_PANIC: Mutex<String> = Mutex::new(String::new());
+
+/// Record every panic in memory (shown in the UI) and in crash.log next to the settings.
+fn install_panic_hook(log: PathBuf) {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = format!("{info}");
+        if let Ok(mut m) = LAST_PANIC.lock() { *m = msg.clone(); }
+        let _ = std::fs::create_dir_all(log.parent().unwrap_or(std::path::Path::new(".")));
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+            let _ = writeln!(f, "[{}] {msg}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+        }
+        prev(info);
+    }));
+}
+
 fn err<E: std::fmt::Display>(e: E) -> String { e.to_string() }
 
 fn settings_path(d: &PathBuf) -> PathBuf { d.join("settings.json") }
@@ -52,7 +69,12 @@ async fn run_scan(handle: AppHandle, settings: Settings) -> Result<analysis::Rep
     let mut s = settings;
     s.cache_path = Some(cache);
     let h = handle.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || analysis::run(&s, &|p| { let _ = h.emit("scan-progress", p); })).await.map_err(err)?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analysis::run(&s, &|p| { let _ = h.emit("scan-progress", p); })))
+    }).await.map_err(err)?.map_err(|_| {
+        let msg = LAST_PANIC.lock().map(|m| m.clone()).unwrap_or_default();
+        format!("Скан прервался из-за внутренней ошибки. Подробности записаны в crash.log в папке настроек.\n{msg}")
+    })?;
     let report = result.report.clone();
     handle.state::<Mutex<App>>().lock().unwrap().analysis = Some(result);
     Ok(report)
@@ -167,6 +189,7 @@ fn main() {
             let data_dir = app.path().app_data_dir().unwrap_or_else(|_| dirs::data_dir().unwrap_or_default().join("AbletonOrganizer"));
             let settings: Settings = std::fs::read(settings_path(&data_dir)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
             let bins: Vec<PathBuf> = std::fs::read(bins_path(&data_dir)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+            install_panic_hook(data_dir.join("crash.log"));
             let home = dirs::home_dir().unwrap_or_default();
             app.manage(Mutex::new(App { settings, analysis: None, trash: Trash::new(home, bins), data_dir }));
             Ok(())
