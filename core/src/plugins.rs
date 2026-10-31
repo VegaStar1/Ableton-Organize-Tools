@@ -143,3 +143,37 @@ pub fn group_families(list: Vec<InstalledPlugin>) -> Vec<Family> {
     }
     map.into_values().collect()
 }
+
+/// Local pictures of plugins, no internet needed:
+/// - VST3 bundles may ship GUI snapshots in `Contents/Resources/Snapshots`
+/// - Native Instruments NKS artwork in `NI Resources/image/<product>`
+/// Returns family key -> image path.
+pub fn find_images(families: &[Family]) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for f in families {
+        for p in &f.plugins {
+            if p.format != PluginFormat::Vst3 { continue; }
+            let snaps = Path::new(&p.path).join("Contents").join("Resources").join("Snapshots");
+            if let Ok(rd) = std::fs::read_dir(&snaps) {
+                let mut pngs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|x| x.extension().map_or(false, |e| e.eq_ignore_ascii_case("png"))).collect();
+                // prefer the 1x snapshot (smaller) when both exist
+                pngs.sort_by_key(|x| x.to_string_lossy().contains("_2.0x"));
+                if let Some(img) = pngs.first() { out.insert(family_key(&f.display), img.to_string_lossy().into_owned()); }
+            }
+        }
+    }
+    let ni_roots: Vec<PathBuf> = if cfg!(windows) { vec![PathBuf::from("C:\\Users\\Public\\Documents\\NI Resources\\image")] } else { vec![PathBuf::from("/Users/Shared/NI Resources/image")] };
+    let want: std::collections::HashMap<String, String> = families.iter().map(|f| (family_key(&f.display), f.display.clone())).collect();
+    for root in ni_roots {
+        for e in jwalk::WalkDir::new(&root).max_depth(3).into_iter().flatten() {
+            if !e.file_type().is_dir() { continue; }
+            let key = family_key(&e.file_name().to_string_lossy());
+            if key.is_empty() || out.contains_key(&key) || !want.contains_key(&key) { continue; }
+            for name in ["VB_artwork.png", "MST_artwork.png", "OSO_logo.png", "VB_logo.png"] {
+                let p = e.path().join(name);
+                if p.is_file() { out.insert(key.clone(), p.to_string_lossy().into_owned()); break; }
+            }
+        }
+    }
+    out
+}

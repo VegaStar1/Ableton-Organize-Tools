@@ -71,7 +71,7 @@ fn end_to_end() {
     assert_eq!(b.report.timings.parsed_projects, 0);
 
     let kids = a.samples.children(None);
-    assert!(!kids.is_empty());
+    assert!(!kids.items.is_empty());
 }
 
 #[test]
@@ -123,5 +123,52 @@ fn cyrillic_folders_full_scan() {
     let st = |n: &str| a.samples.entries.iter().find(|e| e.slash.ends_with(n)).unwrap().state;
     assert_eq!(st("Бочка.wav"), UsageState::Used);
     assert_eq!(st("Лишний.wav"), UsageState::Unused);
-    assert!(!a.samples.children(None).is_empty());
+    assert!(!a.samples.children(None).items.is_empty());
+}
+
+#[test]
+fn tree_strict_names_presets_and_change_detection() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    let lib = root.join("lib");
+    fs::create_dir_all(lib.join("A/B")).unwrap();
+    fs::create_dir_all(lib.join("Copies")).unwrap();
+    fs::write(lib.join("A/B/kick.wav"), vec![0u8; 100]).unwrap();
+    fs::write(lib.join("Copies/kick.wav"), vec![0u8; 100]).unwrap(); // same name, other folder
+    fs::write(lib.join("A/loop.wav"), vec![0u8; 50]).unwrap();
+    fs::write(lib.join("A/rack-only.wav"), vec![0u8; 30]).unwrap();
+    // a Drum Rack preset inside the library that uses rack-only.wav
+    let rack = lib.join("A/rack-only.wav").to_string_lossy().replace('\\', "/");
+    write_als(&lib.join("A/Kit.adg"), &format!(r#"<Ableton><FileRef><Path Value="{rack}"/></FileRef></Ableton>"#));
+    let proj = root.join("proj/P");
+    fs::create_dir_all(&proj).unwrap();
+    let kick = lib.join("A/B/kick.wav").to_string_lossy().replace('\\', "/");
+    write_als(&proj.join("P.als"), &format!(r#"<Ableton><FileRef><Path Value="{kick}"/></FileRef></Ableton>"#));
+
+    let s = Settings { daws: vec![Daw::Ableton], project_dirs: vec![root.join("proj")], sample_dirs: vec![lib.clone()], ..Settings::default() };
+    let mut a = analysis::run(&s, &|_| {});
+    let st = |a: &analysis::Analysis, n: &str| a.samples.entries.iter().find(|e| e.slash.ends_with(n)).unwrap().state;
+    assert_eq!(st(&a, "Copies/kick.wav"), UsageState::Used, "strict mode keeps same-name files");
+    assert_eq!(st(&a, "A/rack-only.wav"), UsageState::Used, "presets inside libraries count");
+    assert_eq!(st(&a, "A/loop.wav"), UsageState::Unused);
+
+    let top = a.samples.children(None);
+    assert_eq!(top.items.len(), 1);
+    assert_eq!(top.items[0].bytes, 280);
+    let inside = a.samples.children(Some(&top.items[0].path));
+    let a_dir = inside.items.iter().find(|c| c.name == "A").unwrap();
+    assert_eq!(a_dir.unused_bytes, 50);
+    let loop_path = a.samples.entries.iter().find(|e| e.slash.ends_with("A/loop.wav")).unwrap().slash.clone();
+    a.samples.set_gone_by_path(&loop_path, true);
+    let inside = a.samples.children(Some(&top.items[0].path));
+    assert_eq!(inside.items.iter().find(|c| c.name == "A").unwrap().unused_bytes, 0);
+
+    let s2 = Settings { strict_names: false, ..s.clone() };
+    let b = analysis::run(&s2, &|_| {});
+    assert_eq!(st(&b, "Copies/kick.wav"), UsageState::Unused);
+
+    assert!(analysis::projects_changed(&s, &a.stamps).is_none());
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write_als(&proj.join("P.als"), "<Ableton/>");
+    assert!(analysis::projects_changed(&s, &a.stamps).is_some());
 }

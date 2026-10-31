@@ -19,23 +19,33 @@ pub fn norm(p: &str) -> String {
     p.replace('\\', "/").trim_end_matches('/').to_lowercase()
 }
 
-pub fn scan(roots: &[PathBuf], counter: Option<&AtomicU64>) -> Vec<SampleFile> {
+/// Ableton presets (racks, clips) stored next to samples. They reference those
+/// samples, so they are read like projects.
+pub const PRESET_EXTS: &[&str] = &["adg", "adv", "alc", "alp"];
+
+#[derive(Default)]
+pub struct ScanOut { pub files: Vec<SampleFile>, pub presets: Vec<SampleFile> }
+
+pub fn scan(roots: &[PathBuf], counter: Option<&AtomicU64>) -> ScanOut {
     let mut out = Vec::new();
+    let mut presets = Vec::new();
     for root in roots {
         for e in WalkDir::new(root).skip_hidden(false).follow_links(false).into_iter().flatten() {
             if !e.file_type().is_file() { continue; }
             // Skip our own trash folders.
             let name = e.file_name().to_string_lossy();
-            if let Some(ext) = Path::new(&*name).extension().and_then(|s| s.to_str()) {
-                if !SAMPLE_EXTS.iter().any(|x| x.eq_ignore_ascii_case(ext)) { continue; }
-            } else { continue; }
+            let Some(ext) = Path::new(&*name).extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()) else { continue };
+            let is_preset = PRESET_EXTS.contains(&ext.as_str());
+            if !is_preset && !SAMPLE_EXTS.contains(&ext.as_str()) { continue; }
             let p = e.path();
             if p.components().any(|c| c.as_os_str() == crate::trash::TRASH_DIR_NAME) { continue; }
             let Ok(md) = e.metadata() else { continue };
             let mtime = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
-            out.push(SampleFile { path: p.to_string_lossy().into_owned(), size: md.len(), mtime });
+            let f = SampleFile { path: p.to_string_lossy().into_owned(), size: md.len(), mtime };
+            if is_preset { presets.push(f); continue; }
+            out.push(f);
             if let Some(c) = counter { c.fetch_add(1, Ordering::Relaxed); }
         }
     }
-    out
+    ScanOut { files: out, presets }
 }

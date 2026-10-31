@@ -35,11 +35,14 @@ pub struct Settings {
     pub preferred_format: PluginFormat,
     pub unknown_policy: UnknownPolicy,
     pub cache_path: Option<PathBuf>,
+    /// Keep every library file whose *name* appears in any project, even when
+    /// the project points to a different folder. Safer, on by default.
+    pub strict_names: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self { daws: vec![Daw::Ableton], project_dirs: vec![], sample_dirs: vec![], extra_plugin_dirs: vec![], library_dirs: vec![],
-            old_days: 365, include_backups: false, preferred_format: PluginFormat::Vst3, unknown_policy: UnknownPolicy::Safe, cache_path: None }
+            old_days: 365, include_backups: false, preferred_format: PluginFormat::Vst3, unknown_policy: UnknownPolicy::Safe, cache_path: None, strict_names: true }
     }
 }
 
@@ -76,6 +79,8 @@ pub struct PluginReport {
     pub recommended: Vec<String>,
     pub total_size: u64,
     pub recommended_size: u64,
+    /// Local picture of the plugin, when one ships with it.
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -122,16 +127,52 @@ pub struct SampleEntry {
     pub by_name: bool,
     /// Moved to the in-app trash after the scan.
     pub gone: bool,
+    /// Folder node this file sits in.
+    pub node: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Agg { pub bytes: u64, pub files: u64, pub used_bytes: u64, pub old_bytes: u64, pub unused_bytes: u64, pub owned_bytes: u64 }
+
+impl Agg {
+    fn apply(&mut self, e: &SampleEntry, sign: i64) {
+        let add = |v: &mut u64, x: u64| { *v = if sign > 0 { *v + x } else { v.saturating_sub(x) } };
+        add(&mut self.bytes, e.size);
+        add(&mut self.files, 1);
+        match e.state {
+            UsageState::Used => add(&mut self.used_bytes, e.size),
+            UsageState::OldOnly => add(&mut self.old_bytes, e.size),
+            UsageState::ProjectOwned => add(&mut self.owned_bytes, e.size),
+            UsageState::Unused => add(&mut self.unused_bytes, e.size),
+        }
+    }
+}
+
+/// A folder inside a sample library, with totals for everything below it.
+pub struct DirNode {
+    pub path: String,
+    pub name: String,
+    pub parent: Option<u32>,
+    pub dirs: Vec<u32>,
+    pub files: Vec<u32>,
+    pub agg: Agg,
 }
 
 pub struct SampleIndex {
     pub entries: Vec<SampleEntry>,
     pub used_by: HashMap<u32, Vec<u32>>,
     pub project_names: Vec<String>,
-    pub roots: Vec<String>,
+    pub roots: Vec<u32>,
+    pub nodes: Vec<DirNode>,
+    pub node_by_key: HashMap<String, u32>,
 }
 
-pub struct Analysis { pub report: Report, pub samples: SampleIndex }
+pub struct Analysis {
+    pub report: Report,
+    pub samples: SampleIndex,
+    /// Project files and their modification times at scan time.
+    pub stamps: Vec<(PathBuf, u64)>,
+}
 
 fn slash(p: &str) -> String { p.strip_prefix("\\\\?\\").unwrap_or(p).replace('\\', "/") }
 
@@ -147,14 +188,40 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
     let installed = plugins::scan_dirs(&dirs);
     let families = plugins::group_families(installed);
     tm.plugins_ms = t.elapsed().as_millis();
+    let images = plugins::find_images(&families);
     let names: Vec<String> = families.iter().map(|f| f.display.clone()).collect();
     let fp = cache::fingerprint(&names);
     let matcher = NameMatcher::new(&names);
 
-    // 2. projects (parallel, cached)
+    // 2. samples (metadata only). Ableton presets found here are read like projects.
+    let t = Instant::now();
+    let counter = AtomicU64::new(0);
+    let scan_out: samples::ScanOut = std::thread::scope(|sc| {
+        let h = sc.spawn(|| samples::scan(&s.sample_dirs, Some(&counter)));
+        while !h.is_finished() {
+            progress(Progress { stage: "samples", done: counter.load(Ordering::Relaxed), total: 0 });
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        h.join().unwrap_or_default()
+    });
+    let sample_files: Vec<SampleFile> = scan_out.files;
+    tm.samples_ms = t.elapsed().as_millis();
+
+    // 3. projects (parallel, cached)
     let t = Instant::now();
     progress(Progress { stage: "projects", done: 0, total: 0 });
-    let files = projects::discover(&s.project_dirs, &s.daws, s.include_backups, &s.library_dirs);
+    let mut files = projects::discover(&s.project_dirs, &s.daws, s.include_backups, &s.library_dirs);
+    if s.daws.contains(&Daw::Ableton) {
+        let known: HashSet<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+        for p in scan_out.presets {
+            let path = PathBuf::from(&p.path);
+            if known.contains(&path) { continue; }
+            let mut pf = projects::make(Daw::Ableton, path, None, true);
+            pf.size = p.size; pf.mtime = p.mtime;
+            files.push(pf);
+        }
+    }
+    let stamps: Vec<(PathBuf, u64)> = files.iter().filter(|f| !f.is_library).map(|f| (f.path.clone(), f.mtime)).collect();
     let mut cache = s.cache_path.as_deref().map(Cache::load).unwrap_or_default();
     let done = AtomicU64::new(0);
     let total = files.len() as u64;
@@ -186,18 +253,6 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
     if let Some(cp) = &s.cache_path { cache.save(cp); }
     tm.projects_ms = t.elapsed().as_millis();
 
-    // 3. samples
-    let t = Instant::now();
-    let counter = AtomicU64::new(0);
-    let sample_files: Vec<SampleFile> = std::thread::scope(|sc| {
-        let h = sc.spawn(|| samples::scan(&s.sample_dirs, Some(&counter)));
-        while !h.is_finished() {
-            progress(Progress { stage: "samples", done: counter.load(Ordering::Relaxed), total: 0 });
-            std::thread::sleep(std::time::Duration::from_millis(120));
-        }
-        h.join().unwrap_or_default()
-    });
-    tm.samples_ms = t.elapsed().as_millis();
 
     // 4. analysis
     let t = Instant::now();
@@ -217,10 +272,11 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
     let mut proj_dirs_lower: HashSet<String> = HashSet::new();
 
     // Index samples by lowercase path first (used for missing-file checks and reference matching).
-    let mut entries: Vec<SampleEntry> = sample_files.into_iter().map(|f| SampleEntry { slash: slash(&f.path), size: f.size, mtime: f.mtime, state: UsageState::Unused, by_name: false, gone: false }).collect();
+    let mut entries: Vec<SampleEntry> = sample_files.into_iter().map(|f| SampleEntry { slash: slash(&f.path), size: f.size, mtime: f.mtime, state: UsageState::Unused, by_name: false, gone: false, node: 0 }).collect();
     let mut lookup: HashMap<String, u32> = entries.iter().enumerate().map(|(i, e)| (e.slash.to_lowercase(), i as u32)).collect();
     let mut refs: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut unresolved: HashMap<String, Vec<u32>> = HashMap::new();
+    let mut all_names: HashMap<String, Vec<u32>> = HashMap::new();
 
     for (pf, sc) in &scans {
         let old = !pf.is_library && pf.mtime < old_cut;
@@ -260,6 +316,11 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
             for cand in abs.iter().chain(rel.iter()) {
                 if let Some(&idx) = lookup.get(&cand.to_lowercase()) { refs.entry(idx).or_default().push(pid); hit = true; }
             }
+            if s.strict_names {
+                for cand in abs.iter().chain(rel.iter()) {
+                    if let Some(name) = cand.rsplit('/').next() { if !name.is_empty() { all_names.entry(name.to_lowercase()).or_default().push(pid); } }
+                }
+            }
             if !hit {
                 let exists = abs.iter().chain(rel.iter()).any(|c| Path::new(c).exists());
                 if !exists {
@@ -280,6 +341,7 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
 
     // sample states
     let mut by_name_refs: HashMap<u32, Vec<u32>> = HashMap::new();
+    if s.strict_names { for (k, v) in all_names { unresolved.entry(k).or_default().extend(v); } }
     if !unresolved.is_empty() {
         for (i, e) in entries.iter().enumerate() {
             let i = i as u32;
@@ -355,7 +417,7 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
         let status = if !any_use && fmts.iter().all(|f| f.used_by.is_empty() && f.protected_by.is_empty()) { PluginStatus::Unused }
             else if !rec.is_empty() { PluginStatus::Duplicate } else { PluginStatus::Used };
         let rsize = fmts.iter().filter(|f| rec.contains(&f.path)).map(|f| f.size).sum();
-        plugin_reports.push(PluginReport { name: fam.display.clone(), used_projects: fam_users[fi].len(), status, total_size: fmts.iter().map(|f| f.size).sum(), recommended_size: rsize, recommended: rec, formats: fmts });
+        plugin_reports.push(PluginReport { name: fam.display.clone(), used_projects: fam_users[fi].len(), status, total_size: fmts.iter().map(|f| f.size).sum(), recommended_size: rsize, recommended: rec, image: images.get(&family_key(&fam.display)).cloned(), formats: fmts });
     }
     plugin_reports.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
@@ -364,9 +426,9 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
         if d.support() == SupportLevel::Heuristic { warnings.push(format!("{}: плагины определяются по названиям внутри проекта, формат неизвестен. Защищаются все форматы, которые эта DAW умеет загружать.", d.name())); }
     }
     tm.analysis_ms = t.elapsed().as_millis();
-    let roots = s.sample_dirs.iter().map(|p| slash(&p.to_string_lossy())).collect();
-    Analysis { report: Report { plugins: plugin_reports, projects: project_reports, samples: summary, timings: tm, warnings },
-        samples: SampleIndex { entries, used_by, project_names: proj_names, roots } }
+    let root_paths: Vec<String> = s.sample_dirs.iter().map(|p| slash(&p.to_string_lossy()).trim_end_matches('/').to_string()).collect();
+    let samples = SampleIndex::build(entries, used_by, proj_names, &root_paths);
+    Analysis { report: Report { plugins: plugin_reports, projects: project_reports, samples: summary, timings: tm, warnings }, samples, stamps }
 }
 
 /// Yield every parent directory of a lowercase slash path: "a/b/c.wav" -> "a/b", "a".
@@ -397,59 +459,130 @@ pub struct Child {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct Listing { pub items: Vec<Child>, pub hidden_files: u64, pub parent: Option<String> }
+
+#[derive(Debug, Clone, Serialize)]
 pub struct FileInfo { pub idx: u32, pub path: String, pub name: String, pub size: u64, pub mtime: u64, pub state: UsageState, pub by_name: bool, pub used_by: Vec<String> }
 
+/// Max file rows sent for one folder; the rest are summarised.
+pub const MAX_FILE_ROWS: usize = 3000;
+
 impl SampleIndex {
+    /// Build the folder tree once so that browsing is instant on huge libraries.
+    pub fn build(mut entries: Vec<SampleEntry>, used_by: HashMap<u32, Vec<u32>>, project_names: Vec<String>, roots: &[String]) -> Self {
+        let mut nodes: Vec<DirNode> = Vec::new();
+        let mut node_by_key: HashMap<String, u32> = HashMap::new();
+        let mut root_ids = Vec::new();
+        for r in roots {
+            let key = r.to_lowercase();
+            if node_by_key.contains_key(&key) { continue; }
+            let id = nodes.len() as u32;
+            nodes.push(DirNode { path: r.clone(), name: r.rsplit('/').next().unwrap_or(r).to_string(), parent: None, dirs: vec![], files: vec![], agg: Agg::default() });
+            node_by_key.insert(key, id);
+            root_ids.push(id);
+        }
+        // longest roots first so nested roots win
+        let mut roots_sorted: Vec<(String, u32)> = roots.iter().map(|r| (r.to_lowercase(), node_by_key[&r.to_lowercase()])).collect();
+        roots_sorted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+        fn get_or_create(dir: &str, root_len: usize, root_id: u32, nodes: &mut Vec<DirNode>, by_key: &mut HashMap<String, u32>) -> u32 {
+            if dir.len() <= root_len { return root_id; }
+            let key = dir.to_lowercase();
+            if let Some(&id) = by_key.get(&key) { return id; }
+            let (parent_dir, name) = match dir.rfind('/') { Some(i) => (&dir[..i], &dir[i + 1..]), None => ("", dir) };
+            let parent = get_or_create(parent_dir, root_len, root_id, nodes, by_key);
+            let id = nodes.len() as u32;
+            nodes.push(DirNode { path: dir.to_string(), name: name.to_string(), parent: Some(parent), dirs: vec![], files: vec![], agg: Agg::default() });
+            nodes[parent as usize].dirs.push(id);
+            by_key.insert(key, id);
+            id
+        }
+
+        let mut last: Option<(String, u32)> = None;
+        let mut keep = vec![true; entries.len()];
+        for (i, e) in entries.iter_mut().enumerate() {
+            let Some(cut) = e.slash.rfind('/') else { keep[i] = false; continue };
+            let dir = &e.slash[..cut];
+            let node = match &last {
+                Some((d, n)) if d == dir => *n,
+                _ => {
+                    let lower = dir.to_lowercase();
+                    let Some((rl, rid)) = roots_sorted.iter().find(|(r, _)| lower == *r || (lower.len() > r.len() && lower.starts_with(r.as_str()) && lower.as_bytes()[r.len()] == b'/')).map(|(r, id)| (r.len(), *id))
+                        else { keep[i] = false; continue };
+                    let n = get_or_create(dir, rl, rid, &mut nodes, &mut node_by_key);
+                    last = Some((dir.to_string(), n));
+                    n
+                }
+            };
+            e.node = node;
+            nodes[node as usize].files.push(i as u32);
+        }
+        for (i, e) in entries.iter().enumerate() {
+            if !keep[i] { continue; }
+            let mut n = Some(e.node);
+            while let Some(id) = n { nodes[id as usize].agg.apply(e, 1); n = nodes[id as usize].parent; }
+        }
+        Self { entries, used_by, project_names, roots: root_ids, nodes, node_by_key }
+    }
+
     pub fn fs_path(&self, idx: u32) -> PathBuf {
         let s = &self.entries[idx as usize].slash;
         if cfg!(windows) { PathBuf::from(s.replace('/', "\\")) } else { PathBuf::from(s) }
     }
-    /// Children of a directory. `dir` of `None` lists the scan roots.
-    pub fn children(&self, dir: Option<&str>) -> Vec<Child> {
-        let prefix: String = match dir { Some(d) => slash(d).trim_end_matches('/').to_string(), None => String::new() };
-        let mut map: HashMap<String, Child> = HashMap::new();
-        let roots: Vec<String> = self.roots.iter().map(|r| r.trim_end_matches('/').to_string()).collect();
-        for (i, e) in self.entries.iter().enumerate() {
-            if e.gone { continue; }
-            let rest: &str;
-            let base: String;
-            match dir {
-                Some(_) => {
-                    if e.slash.len() <= prefix.len() + 1 || !e.slash.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes()) || e.slash.as_bytes()[prefix.len()] != b'/' { continue; }
-                    rest = &e.slash[prefix.len() + 1..];
-                    base = e.slash[..prefix.len()].to_string();
-                }
-                None => {
-                    let Some(r) = roots.iter().find(|r| e.slash.len() > r.len() && e.slash.as_bytes()[..r.len()].eq_ignore_ascii_case(r.as_bytes()) && e.slash.as_bytes()[r.len()] == b'/') else { continue };
-                    let name = r.clone();
-                    let c = map.entry(name.to_lowercase()).or_insert_with(|| Child { name: r.rsplit('/').next().unwrap_or(r).to_string(), path: name.clone(), is_dir: true, bytes: 0, files: 0, unused_bytes: 0, used_bytes: 0, old_bytes: 0, owned_bytes: 0, state: None, idx: None });
-                    add(c, e);
-                    continue;
-                }
-            }
-            match rest.find('/') {
-                Some(p) => {
-                    let seg = &rest[..p];
-                    let c = map.entry(seg.to_lowercase()).or_insert_with(|| Child { name: seg.to_string(), path: format!("{base}/{seg}"), is_dir: true, bytes: 0, files: 0, unused_bytes: 0, used_bytes: 0, old_bytes: 0, owned_bytes: 0, state: None, idx: None });
-                    add(c, e);
-                }
-                None => {
-                    let mut c = Child { name: rest.to_string(), path: e.slash.clone(), is_dir: false, bytes: 0, files: 0, unused_bytes: 0, used_bytes: 0, old_bytes: 0, owned_bytes: 0, state: Some(e.state), idx: Some(i as u32) };
-                    add(&mut c, e);
-                    map.insert(format!("\u{0}{}", rest.to_lowercase()), c);
-                }
-            }
-        }
-        let mut v: Vec<Child> = map.into_values().collect();
-        v.sort_by(|a, b| b.bytes.cmp(&a.bytes));
-        v
+
+    fn dir_child(&self, id: u32) -> Child {
+        let n = &self.nodes[id as usize];
+        Child { name: n.name.clone(), path: n.path.clone(), is_dir: true, bytes: n.agg.bytes, files: n.agg.files, unused_bytes: n.agg.unused_bytes,
+            used_bytes: n.agg.used_bytes, old_bytes: n.agg.old_bytes, owned_bytes: n.agg.owned_bytes, state: None, idx: None }
     }
 
-    /// Mark a file as moved to / restored from the trash and recompute totals.
+    /// Children of a folder. `None` lists the library roots.
+    pub fn children(&self, dir: Option<&str>) -> Listing {
+        let mut items: Vec<Child>;
+        let mut hidden = 0;
+        let mut parent = None;
+        match dir {
+            None => items = self.roots.iter().map(|&r| { let mut c = self.dir_child(r); c.name = c.path.clone(); c }).filter(|c| c.files > 0).collect(),
+            Some(d) => {
+                let key = slash(d).trim_end_matches('/').to_lowercase();
+                let Some(&id) = self.node_by_key.get(&key) else { return Listing { items: vec![], hidden_files: 0, parent: None } };
+                let n = &self.nodes[id as usize];
+                parent = n.parent.map(|p| self.nodes[p as usize].path.clone());
+                items = n.dirs.iter().map(|&c| self.dir_child(c)).filter(|c| c.files > 0).collect();
+                let mut files: Vec<u32> = n.files.iter().copied().filter(|&i| !self.entries[i as usize].gone).collect();
+                files.sort_by(|&a, &b| self.entries[b as usize].size.cmp(&self.entries[a as usize].size));
+                if files.len() > MAX_FILE_ROWS { hidden = (files.len() - MAX_FILE_ROWS) as u64; files.truncate(MAX_FILE_ROWS); }
+                items.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+                for i in files {
+                    let e = &self.entries[i as usize];
+                    let mut c = Child { name: e.slash.rsplit('/').next().unwrap_or("").to_string(), path: e.slash.clone(), is_dir: false, bytes: 0, files: 0,
+                        unused_bytes: 0, used_bytes: 0, old_bytes: 0, owned_bytes: 0, state: Some(e.state), idx: Some(i) };
+                    let mut a = Agg::default(); a.apply(e, 1);
+                    c.bytes = a.bytes; c.files = 1; c.unused_bytes = a.unused_bytes; c.used_bytes = a.used_bytes; c.old_bytes = a.old_bytes; c.owned_bytes = a.owned_bytes;
+                    items.push(c);
+                }
+                return Listing { items, hidden_files: hidden, parent };
+            }
+        }
+        items.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        Listing { items, hidden_files: hidden, parent }
+    }
+
+    /// Mark a file as moved to / restored from the trash; folder totals follow.
     pub fn set_gone_by_path(&mut self, fs_path: &str, gone: bool) {
         let want = slash(fs_path);
-        if let Some(e) = self.entries.iter_mut().find(|e| e.slash.eq_ignore_ascii_case(&want)) { e.gone = gone; }
+        let Some(i) = self.entries.iter().position(|e| e.slash.eq_ignore_ascii_case(&want)) else { return };
+        if self.entries[i].gone == gone { return; }
+        self.entries[i].gone = gone;
+        let sign = if gone { -1 } else { 1 };
+        let mut n = Some(self.entries[i].node);
+        while let Some(id) = n {
+            let e = &self.entries[i];
+            self.nodes[id as usize].agg.apply(e, sign);
+            n = self.nodes[id as usize].parent;
+        }
     }
+
     pub fn summary(&self) -> SampleSummary {
         let mut s = SampleSummary::default();
         for e in self.entries.iter().filter(|e| !e.gone) {
@@ -481,12 +614,18 @@ impl SampleIndex {
     }
 }
 
-fn add(c: &mut Child, e: &SampleEntry) {
-    c.bytes += e.size; c.files += 1;
-    match e.state {
-        UsageState::Used => c.used_bytes += e.size,
-        UsageState::OldOnly => c.old_bytes += e.size,
-        UsageState::ProjectOwned => c.owned_bytes += e.size,
-        UsageState::Unused => c.unused_bytes += e.size,
+/// Project files that appeared, disappeared or changed since the scan.
+/// Removing files is refused while this returns something.
+pub fn projects_changed(s: &Settings, stamps: &[(PathBuf, u64)]) -> Option<String> {
+    let now = projects::discover(&s.project_dirs, &s.daws, s.include_backups, &[]);
+    let before: HashMap<&Path, u64> = stamps.iter().map(|(p, m)| (p.as_path(), *m)).collect();
+    for f in &now {
+        match before.get(f.path.as_path()) {
+            None => return Some(format!("Появился новый проект: {}", f.path.display())),
+            Some(&m) if m != f.mtime => return Some(format!("Проект изменён после скана: {}", f.path.display())),
+            _ => {}
+        }
     }
+    if now.len() < stamps.len() { return Some("Часть проектов удалена или перемещена после скана".into()); }
+    None
 }

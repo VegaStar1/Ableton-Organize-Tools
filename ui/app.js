@@ -24,6 +24,11 @@ const S = {
   filter: 'all', q: '', selP: null, selPr: null, goneP: new Set(),
   dir: null, kids: [], file: null, allowOld: false, onlyUnused: false,
   sel: new Map(), trash: [], dups: null, modal: null, dawName: {},
+  hidden: 0, hist: [null], hpos: 0, loading: false, dupProg: null, menu: null, playing: null, cache: null,
+};
+const toSrc = (path) => {
+  const native = S.boot && S.boot.platform === 'windows' ? path.replace(/\//g, '\\') : path;
+  return T ? T.core.convertFileSrc(native) : '';
 };
 
 /* ---------- toast / modal ---------- */
@@ -58,6 +63,7 @@ async function init() {
   S.settings = S.boot.settings;
   S.boot.daws.forEach((d) => (S.dawName[d.daw] = d.name));
   listen('scan-progress', (e) => { S.progress = e.payload; if (S.scanning) paintProgress(); });
+  listen('dup-progress', (e) => { S.dupProg = e.payload; paintDup(); });
   S.trash = await invoke('trash_list');
   if (S.boot.first_run) { S.view = 'wizard'; }
   else { await startScan(); return; }
@@ -85,7 +91,16 @@ async function startScan() {
   render();
 }
 
-async function loadKids() { S.kids = await invoke('sample_children', { dir: S.dir }); }
+async function loadKids() {
+  S.loading = true;
+  try { const l = await invoke('sample_children', { dir: S.dir }); S.kids = l.items; S.hidden = l.hidden_files; }
+  finally { S.loading = false; }
+}
+async function goDir(dir, push = true) {
+  if (push) { S.hist = S.hist.slice(0, S.hpos + 1); S.hist.push(dir); S.hpos = S.hist.length - 1; }
+  S.dir = dir; S.file = null; S.loading = true; render();
+  await loadKids(); render();
+}
 
 /* ---------- rendering ---------- */
 function render() {
@@ -97,7 +112,7 @@ function render() {
   const views = { plugins: [vPlugins, sPlugin], projects: [vProjects, sProject], samples: [vSamples, sSample], dups: [vDups, sDups], trash: [vTrash, sTrash], settings: [vSettings, sSettings] };
   const [main, side] = views[S.view];
   const keepScroll = $('.list') ? $('.list').scrollTop : 0;
-  root.innerHTML = `<div class="app">${nav()}<main class="card main">${main()}${actionBar()}</main><aside class="card side">${side()}</aside></div>${S.modal ? modal() : ''}`;
+  root.innerHTML = `<div class="app">${nav()}<main class="card main">${main()}${actionBar()}</main><aside class="card side">${side()}</aside></div>${S.menu ? menu() : ''}${S.modal ? modal() : ''}`;
   const l = $('.list'); if (l) l.scrollTop = keepScroll;
 }
 
@@ -135,9 +150,9 @@ function vPlugins() {
     (list.map((p) => {
       const st = { used: ['ok', 'Нужен'], duplicate: ['warn', 'Лишние форматы'], unused: ['bad', 'Не используется'] }[p.status];
       const n = p.formats.filter((f) => S.sel.has(selKey('plugin', f.path))).length;
-      return `<div class="row c-pl" tabindex="0" data-act="selP" data-v="${esc(p.name)}" aria-selected="${S.selP === p.name}">
+      return `<div class="row c-pl" tabindex="0" data-act="selP" data-v="${esc(p.name)}" data-ctx="plugin" aria-selected="${S.selP === p.name}" ${p.image ? `data-img="${esc(toSrc(p.image))}"` : ''}>
         <span>${n ? `<span class="badge">${n}</span>` : ''}</span>
-        <div class="name"><b>${esc(p.name)}</b></div>
+        <div class="name"><b>${esc(p.name)}</b>${p.image ? '<small>есть картинка</small>' : ''}</div>
         <div class="chips">${p.formats.map((f) => `<span class="chip ${f.used_by.length ? 'on' : ''}">${FMT[f.format]} · ${f.used_by.length}</span>`).join('')}</div>
         <div class="num mono">${sz(p.total_size)}</div><div><span class="pill ${st[0]}">${st[1]}</span></div></div>`;
     }).join('') || '<div class="empty">Ничего не найдено</div>') + '</div>';
@@ -146,11 +161,12 @@ function sPlugin() {
   const p = visiblePlugins().find((x) => x.name === S.selP);
   if (!p) return '<section class="empty">Выберите плагин слева</section>';
   const rec = p.recommended;
-  return `<section><h2>${esc(p.name)}</h2><div class="mute">Используется в проектах: ${p.used_projects}</div></section>
+  return `${p.image ? `<img class="shot" src="${esc(toSrc(p.image))}" alt="${esc(p.name)}">` : ''}<section><h2>${esc(p.name)}</h2><div class="mute">Используется в проектах: ${p.used_projects}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px"><button class="btn sm" data-act="uninstallMenu" data-v="${esc(p.name)}">Деинсталлировать…</button><button class="btn sm" data-act="webSearch" data-v="${esc(p.name)}">${p.image ? 'Найти в интернете' : 'Как выглядит? Найти в интернете'}</button></div></section>
   <section><h3>Форматы на диске</h3>${p.formats.map((f) => {
     const k = selKey('plugin', f.path), on = S.sel.has(k);
-    return `<div class="fmt"><div class="top"><b>${FMT[f.format]}</b><span class="mono mute">${sz(f.size)}</span></div>
-      <div class="path">${esc(f.path)}</div>
+    return `<div class="fmt" data-ctx="path" data-path="${esc(f.path)}"><div class="top"><b>${FMT[f.format]}</b><span class="mono mute">${sz(f.size)}</span></div>
+      <div class="path">${esc(f.path)}</div><button class="btn sm" data-act="reveal" data-path="${esc(f.path)}" style="margin-bottom:6px">Показать в проводнике</button>
       ${f.used_by.length ? `<div class="mute" style="font-size:12px">Нужен в проектах (${f.used_by.length}):</div><ul>${f.used_by.slice(0, 8).map((u) => `<li>${esc(u.project)} <span class="mute">· ${esc(S.dawName[u.daw] || u.daw)}${u.exact ? '' : ', по названию'}</span></li>`).join('')}${f.used_by.length > 8 ? `<li>и ещё ${f.used_by.length - 8}</li>` : ''}</ul>` : ''}
       ${f.protected_by.length ? `<div class="note">${esc(f.reason)}</div>` : ''}
       ${f.removable ? `<div class="mute" style="font-size:12px;margin-bottom:6px">${esc(f.reason)}</div><button class="btn ${on ? '' : 'pri'} sm" data-act="togP" data-path="${esc(f.path)}" data-label="${esc(p.name + ' ' + FMT[f.format])}" data-size="${f.size}">${on ? 'Снять выбор' : 'Выбрать'}</button>` : '<button class="btn sm" disabled>Удалять нельзя</button>'}</div>`;
@@ -166,7 +182,7 @@ function vProjects() {
   const ps = S.report.projects;
   return head('Проекты') + `<div class="stats"><div class="stat"><b>${ps.length}</b><span>проектов</span></div><div class="stat"><b>${sz(ps.reduce((a, p) => a + p.size, 0))}</b><span>сами файлы проектов</span></div><div class="stat"><b>${ps.filter((p) => p.missing.length).length}</b><span>с потерянными файлами</span></div></div>
   <div class="list"><div class="row hd c-pr"><span>Проект</span><span>DAW</span><span>Изменён</span><span class="num">Плагинов</span><span class="num">Файлов</span><span class="num">Размер</span></div>` +
-    (ps.map((p) => `<div class="row c-pr" tabindex="0" data-act="selPr" data-v="${p.id}" aria-selected="${S.selPr === p.id}">
+    (ps.map((p) => `<div class="row c-pr" tabindex="0" data-act="selPr" data-v="${p.id}" data-ctx="path" data-path="${esc(p.path)}" aria-selected="${S.selPr === p.id}">
       <div class="name"><b>${esc(p.name)}</b>${p.missing.length ? `<small style="color:var(--bad)">не найдено файлов: ${p.missing.length}</small>` : ''}</div>
       <span class="mute">${esc(S.dawName[p.daw] || p.daw)}</span><span class="mute">${dt(p.mtime)}</span><span class="num mono">${p.plugins.length}</span><span class="num mono">${p.file_refs}</span><span class="num mono">${sz(p.size)}</span></div>`).join('') || '<div class="empty">Проекты не найдены. Проверьте папки в настройках.</div>') + '</div>';
 }
@@ -174,7 +190,7 @@ function sProject() {
   const p = S.report.projects.find((x) => x.id === S.selPr);
   if (!p) return '<section class="empty">Выберите проект</section>';
   const stl = { ok: '', format_missing: '<span class="pill warn">нет этого формата</span>', not_installed: '<span class="pill bad">не установлен</span>' };
-  return `<section><h2>${esc(p.name)}</h2><div class="mute">${esc(S.dawName[p.daw] || p.daw)} · ${dt(p.mtime)}${p.old ? ' · старый' : ''}</div><div class="path">${esc(p.path)}</div></section>
+  return `<section><h2>${esc(p.name)}</h2><div class="mute">${esc(S.dawName[p.daw] || p.daw)} · ${dt(p.mtime)}${p.old ? ' · старый' : ''}</div><div class="path">${esc(p.path)}</div><button class="btn sm" data-act="reveal" data-path="${esc(p.path)}">Показать в проводнике</button></section>
   <section><h3>Плагины (${p.plugins.length})</h3>${p.plugins.map((x) => `<div class="li"><span>${esc(x.name)}</span><span style="display:flex;gap:6px">${stl[x.state] || ''}${x.format ? `<span class="chip on">${FMT[x.format]}</span>` : '<span class="chip">формат ?</span>'}</span></div>`).join('') || '<span class="mute">Сторонних плагинов нет</span>'}</section>
   <section><h3>Целостность</h3>${p.missing.length ? `<div class="note bad">Не найдено файлов: ${p.missing.length}. Проект уже сейчас открывается с пропусками.</div><ul style="padding-left:16px;margin:8px 0 0;font:11px var(--mono);color:var(--mute);word-break:break-all">${p.missing.slice(0, 12).map((m) => `<li>${esc(m)}</li>`).join('')}</ul>` : '<div class="note ok">Все ссылки на файлы найдены.</div>'}</section>`;
 }
@@ -185,7 +201,7 @@ function crumbs() {
   let acc = '';
   const out = [`<button data-act="goDir" data-v="">Все папки</button>`];
   parts.forEach((p, i) => { acc += (i ? '/' : '') + p; out.push(`<span class="mute">/</span><button data-act="goDir" data-v="${esc(acc)}">${esc(p)}</button>`); });
-  return `<div class="crumbs">${out.join('')}</div>`;
+  return `<div class="crumbs"><button class="navb" data-act="histBack" ${S.hpos > 0 ? '' : 'disabled'} aria-label="Назад" title="Назад (Alt+←)">←</button><button class="navb" data-act="histFwd" ${S.hpos < S.hist.length - 1 ? '' : 'disabled'} aria-label="Вперёд" title="Вперёд (Alt+→)">→</button>${out.join('')}${S.loading ? '<span class="mute" style="margin-left:8px">загружаю…</span>' : ''}</div>`;
 }
 function vSamples() {
   const s = S.report.samples;
@@ -202,24 +218,31 @@ function vSamples() {
       const on = !k.is_dir && S.sel.has(selKey('sample', k.idx));
       const total = k.bytes || 1;
       const st = !k.is_dir ? STATE[k.state] : null;
-      return `<div class="row c-sa" tabindex="0" data-act="${k.is_dir ? 'goDir' : 'selFile'}" data-v="${k.is_dir ? esc(k.path) : k.idx}" aria-selected="${!k.is_dir && S.file && S.file.idx === k.idx}">
+      const playing = !k.is_dir && S.playing === k.path;
+      return `<div class="row c-sa" tabindex="0" data-act="${k.is_dir ? 'goDir' : 'selFile'}" data-v="${k.is_dir ? esc(k.path) : k.idx}" data-ctx="${k.is_dir ? 'dir' : 'sample'}" data-path="${esc(k.path)}" data-idx="${k.idx ?? ''}" data-name="${esc(k.name)}" data-size="${k.bytes}" data-state="${k.state || ''}" aria-selected="${!k.is_dir && S.file && S.file.idx === k.idx}">
         <span>${checkable ? `<input type="checkbox" data-act="togS" data-idx="${k.idx}" data-label="${esc(k.name)}" data-size="${k.bytes}" ${on ? 'checked' : ''}>` : ''}</span>
-        <div class="name"><b>${k.is_dir ? '▸ ' : ''}${esc(k.name)}</b></div>
+        <div class="name" style="display:flex;gap:8px;align-items:center">${k.is_dir ? '<span class="mute">▸</span>' : `<button class="play ${playing ? 'on' : ''}" data-act="play" data-path="${esc(k.path)}" data-name="${esc(k.name)}" aria-label="Прослушать">${playing ? '❚❚' : '▶'}</button>`}<b>${esc(k.name)}</b></div>
         <div>${k.is_dir ? `<span class="mono" style="font-size:12px">${sz(k.used_bytes + k.owned_bytes + k.old_bytes)} из ${sz(k.bytes)}</span><div class="split"><i style="width:${(k.used_bytes + k.owned_bytes) / total * 100}%;background:var(--ok)"></i><i style="width:${k.old_bytes / total * 100}%;background:var(--warn)"></i><i style="width:${k.unused_bytes / total * 100}%;background:var(--bad)"></i></div>` : `<span class="pill ${st[0]}">${st[1]}</span>`}</div>
         <span class="num mono">${k.is_dir ? nf(k.files, 0) : ''}</span><span class="num mono">${sz(k.bytes)}</span></div>`;
-    }).join('') || '<div class="empty">Здесь пусто</div>') + '</div>';
+    }).join('') || `<div class="empty">${S.loading ? 'Загружаю…' : 'Здесь пусто'}</div>`) + (S.hidden ? `<div class="empty" style="padding:14px">И ещё ${nf(S.hidden, 0)} мелких файлов в этой папке. Показаны самые крупные.</div>` : '') + '</div>';
+}
+function player() {
+  if (!S.playing) return '';
+  return `<section class="player"><h3>Сейчас играет</h3><div class="mono" style="font-size:12px;word-break:break-all">${esc(S.playing.split('/').pop())}</div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px"><button class="btn sm" data-act="playToggle">${$('#audio') && !$('#audio').paused ? 'Пауза' : 'Играть'}</button><button class="btn sm" data-act="playStop">Стоп</button><span class="mono mute" id="ptime"></span></div>
+    <div class="seek" data-act="seek"><i id="pseek"></i></div><div class="mute" id="perr" style="font-size:12px"></div></section>`;
 }
 function sSample() {
   const f = S.file;
   const s = S.report.samples;
-  if (!f) return `<section><h2>Как читать цвета</h2></section><section>
+  if (!f) return player() + `<section><h2>Как читать цвета</h2></section><section>
     <div class="li"><span class="pill ok">Нужен</span><span class="mute">используется недавним проектом</span></div>
     <div class="li"><span class="pill warn">Только в старых</span><span class="mute">только проекты старше ${S.settings.old_days} дн.</span></div>
     <div class="li"><span class="pill bad">Нигде</span><span class="mute">ни одной ссылки в проектах</span></div>
     <div class="li"><span class="pill neu">Часть проекта</span><span class="mute">лежит в папке проекта</span></div></section>
     <section><h3>Итого по библиотеке</h3><div class="note info">Можно убрать до ${sz(s.unused_bytes)} (${nf(s.unused_files, 0)} файлов). Всё идёт в Корзину программы, потом можно вернуть.</div></section>`;
   const st = STATE[f.state];
-  return `<section><h2>${esc(f.name)}</h2><div class="path">${esc(f.path)}</div><div style="display:flex;gap:8px;align-items:center"><span class="pill ${st[0]}">${st[1]}</span><span class="mono mute">${sz(f.size)}</span></div></section>
+  return player() + `<section><h2>${esc(f.name)}</h2><div class="path">${esc(f.path)}</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="pill ${st[0]}">${st[1]}</span><span class="mono mute">${sz(f.size)}</span><button class="btn sm" data-act="play" data-path="${esc(f.path)}" data-name="${esc(f.name)}">${S.playing === f.path ? 'Пауза' : 'Прослушать'}</button><button class="btn sm" data-act="reveal" data-path="${esc(f.path)}">Показать в проводнике</button></div></section>
   <section><h3>Используется в проектах</h3>${f.used_by.length ? f.used_by.map((n) => `<div class="li"><span>${esc(n)}</span></div>`).join('') : '<span class="mute">Ни в одном</span>'}
   ${f.by_name ? '<div class="note">Найден по имени файла: путь в проекте указывает на другое место. Файл оставлен на всякий случай.</div>' : ''}
   ${f.state === 'oldonly' ? '<div class="note">Используется только в проектах старше года. Включите «Разрешить файлы из старых проектов», если уверены.</div>' : ''}
@@ -230,13 +253,25 @@ function sSample() {
 function vDups() {
   const d = S.dups;
   const reclaim = d ? d.reduce((a, [g, files]) => a + g.size * Math.max(0, files.filter((f) => f.state === 'unused').length - (files.some((f) => f.state !== 'unused') ? 0 : 1)), 0) : 0;
-  return head('Дубликаты') + `<div class="tools"><button class="btn pri" data-act="findDups" ${S.dupBusy ? 'disabled' : ''}>${S.dupBusy ? 'Ищу…' : 'Найти дубликаты сэмплов'}</button><span class="mute">Сравниваются точные копии файлов от 1 МБ. Содержимое читается только у кандидатов с одинаковым размером.</span></div>` +
+  return head('Дубликаты') + `<div class="tools">${S.dupBusy ? '<button class="btn danger" data-act="cancelDups">Остановить</button>' : '<button class="btn pri" data-act="findDups">Найти дубликаты сэмплов</button>'}<span class="mute">Ищутся точные копии файлов от 1 МБ. Содержимое читается только у файлов одинакового размера.</span></div>
+    ${S.dupBusy ? `<div style="padding:12px 16px;border-bottom:1px solid var(--line)"><div class="prog" style="margin:0 0 6px"><i id="dbar" style="width:${dupPct()}%"></i></div><div class="mute" id="dtext">${esc(dupText())}</div></div>` : ''}` +
     (d ? `<div class="stats"><div class="stat"><b>${d.length}</b><span>групп копий</span></div><div class="stat"><b>${sz(reclaim)}</b><span>можно освободить</span></div></div>` : '') +
     `<div class="list">${d ? (d.map(([g, files], gi) => `<div style="padding:10px 16px;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between;margin-bottom:6px"><b>${esc(files[0].name)} <span class="mute">× ${files.length}</span></b><span class="mono mute">${sz(g.size)} каждая</span></div>
       ${files.map((f) => { const on = S.sel.has(selKey('sample', f.idx)); const ok = f.state === 'unused'; const st = STATE[f.state];
         return `<div class="li"><span style="display:flex;gap:8px;align-items:center;min-width:0"><input type="checkbox" data-act="togS" data-idx="${f.idx}" data-label="${esc(f.name)}" data-size="${f.size}" ${on ? 'checked' : ''} ${ok ? '' : 'disabled'}><span class="path" style="margin:0">${esc(f.path)}</span></span><span class="pill ${st[0]}">${st[1]}</span></div>`; }).join('')}
-      <button class="btn sm" style="margin-top:6px" data-act="selDupGroup" data-v="${gi}">Выбрать лишние копии</button></div>`).join('') || '<div class="empty">Точных копий не найдено</div>') : '<div class="empty">Нажмите «Найти дубликаты сэмплов»</div>'}</div>`;
+      <button class="btn sm" style="margin-top:6px" data-act="selDupGroup" data-v="${gi}">Выбрать лишние копии</button></div>`).join('') || '<div class="empty">Точных копий не найдено</div>') : `<div class="empty">${S.dupBusy ? 'Идёт поиск. Можно переключаться на другие разделы.' : 'Нажмите «Найти дубликаты сэмплов»'}</div>`}</div>`;
 }
+function dupPct() {
+  const p = S.dupProg; if (!p) return 2;
+  if (p.stage === 'quick') return 2 + (p.total_files ? p.done_files / p.total_files * 38 : 38);
+  return 40 + (p.total_bytes ? p.done_bytes / p.total_bytes * 60 : 60);
+}
+function dupText() {
+  const p = S.dupProg; if (!p) return 'Подготовка…';
+  if (p.stage === 'quick') return `Шаг 1 из 2. Быстрая проверка: ${nf(p.done_files, 0)} из ${nf(p.total_files, 0)} файлов одинакового размера`;
+  return `Шаг 2 из 2. Сравниваю содержимое: ${sz(p.done_bytes)} из ${sz(p.total_bytes)} (${nf(p.done_files, 0)} из ${nf(p.total_files, 0)} файлов)`;
+}
+function paintDup() { const b = $('#dbar'), t = $('#dtext'); if (b) b.style.width = dupPct() + '%'; if (t) t.textContent = dupText(); }
 function sDups() {
   return `<section><h2>Дубликаты</h2></section><section><div class="note info">Если одну из копий использует проект, она останется. Выбрать для удаления можно только копии, на которые не ссылается ни один проект.</div></section>`;
 }
@@ -248,7 +283,7 @@ function vTrash() {
   <div class="tools"><span class="mute">Здесь лежит то, что вы убрали. Диск освободится, когда вы очистите корзину.</span>
     <button class="btn danger" style="margin-left:auto" data-act="emptyTrash" ${t.length ? '' : 'disabled'}>Очистить корзину</button></div>
   <div class="list"><div class="row hd c-tr"><span></span><span>Что</span><span>Тип</span><span class="num">Размер</span><span></span></div>` +
-    (t.map((i) => `<div class="row c-tr" style="cursor:default"><span></span><div class="name"><b>${esc(i.label)}</b><small>${esc(i.original_path)}</small></div><span class="mute">${i.kind === 'plugin' ? 'Плагин' : 'Сэмпл'}</span><span class="num mono">${sz(i.size)}</span>
+    (t.map((i) => `<div class="row c-tr" style="cursor:default" data-ctx="trash" data-id="${i.id}" data-path="${esc(i.original_path)}"><span></span><div class="name"><b>${esc(i.label)}</b><small>${esc(i.original_path)}</small></div><span class="mute">${i.kind === 'plugin' ? 'Плагин' : 'Сэмпл'}</span><span class="num mono">${sz(i.size)}</span>
       <span style="display:flex;gap:6px;justify-content:flex-end"><button class="btn sm" data-act="restore" data-v="${i.id}">Вернуть</button><button class="btn sm danger" data-act="purgeOne" data-v="${i.id}">Удалить</button></span></div>`).join('') || '<div class="empty">Корзина пуста</div>') + '</div>';
 }
 function sTrash() {
@@ -272,11 +307,52 @@ function vSettings() {
     <label>Проект считается старым после, дней<input type="number" min="30" step="30" value="${st.old_days}" data-act="setOld" style="width:90px"></label>
     <label>Для DAW с разбором по названиям<select data-act="setPolicy"><option value="safe" ${st.unknown_policy === 'safe' ? 'selected' : ''}>Безопасно: беречь все форматы</option><option value="balanced" ${st.unknown_policy === 'balanced' ? 'selected' : ''}>Сбалансированно: беречь основной формат</option></select></label>
     <label>Читать резервные копии Ableton (Backup)<input type="checkbox" data-act="setBackups" ${st.include_backups ? 'checked' : ''}></label>
-    <p><button class="btn pri" data-act="rescan">Сохранить и пересканировать</button></p></div></div>`;
+    <label>Строгая защита: беречь файлы с тем же именем, что в проектах<input type="checkbox" data-act="setStrict" ${st.strict_names !== false ? 'checked' : ''}></label>
+    <p><button class="btn pri" data-act="rescan">Сохранить и пересканировать</button></p>
+    <h3 style="margin:26px 0 6px">Кэш программы</h3>
+    <p class="mute" style="margin:0 0 8px">Кэш ускоряет повторный скан и хранит журнал ошибок. Настройки, папки и корзина при очистке остаются.</p>
+    <div style="display:flex;gap:10px;align-items:center"><span class="mono">${S.cache ? sz(S.cache.bytes) : '…'}</span><button class="btn" data-act="clearCache" ${S.cache && S.cache.bytes ? '' : 'disabled'}>Очистить кэш</button></div>
+    </div></div>`;
 }
 function sSettings() {
   return `<section><h2>Безопасность</h2></section><section><div class="note info">Если сомневаетесь, программа оставляет файл. Любой формат плагина, который может быть нужен проекту, помечается как «нужен».</div>
   <div class="note" style="margin-top:8px">Удалять можно только то, что не нашлось ни в одном проекте из выбранных папок. Если часть проектов лежит вне этих папок, добавьте их.</div></section>`;
+}
+
+/* --- context menu --- */
+function menu() {
+  const m = S.menu;
+  return `<div class="menu" style="left:${m.x}px;top:${m.y}px" role="menu">${m.items.map((it) => it === '-' ? '<hr>' : `<button role="menuitem" data-act="menuPick" data-i="${m.items.indexOf(it)}" ${it.disabled ? 'disabled' : ''} class="${it.danger ? 'danger' : ''}">${esc(it.label)}${it.hint ? `<small>${esc(it.hint)}</small>` : ''}</button>`).join('')}</div>`;
+}
+function openMenu(e, items) {
+  S.menu = { x: Math.min(e.clientX, innerWidth - 270), y: Math.min(e.clientY, innerHeight - 40 - items.length * 34), items };
+  render();
+}
+function copyText(t) { navigator.clipboard.writeText(t).then(() => toast('Путь скопирован'), () => toast(t)); }
+async function reveal(path) { try { await invoke('reveal_path', { path }); } catch (e) { toast('Не удалось открыть: ' + e); } }
+async function uninstallFor(name) {
+  const p = S.report.plugins.find((x) => x.name === name);
+  toast('Ищу деинсталлятор…');
+  const list = await invoke('plugin_uninstallers', { name, paths: p ? p.formats.map((f) => f.path) : [] });
+  $('#toast').hidden = true;
+  if (!list.length) {
+    S.modal = { title: 'Деинсталлятор не найден', ok: 'Понятно', body: `<p>Для «${esc(name)}» в списке программ Windows нет подходящей записи. Плагин можно убрать через корзину этой программы или через установщик производителя.</p>`, fn: async () => {} };
+    render(); return;
+  }
+  S.modal = { title: 'Деинсталлировать ' + name, ok: 'Отмена', body: `<p class="mute" style="margin-top:0">Найдено в «Приложениях» Windows. Запустится программа удаления от производителя. Проверьте название, прежде чем нажать.</p>
+    ${list.map((u) => `<div class="li"><span><b>${esc(u.name)}</b><br><small class="mute">${esc([u.publisher, u.version].filter(Boolean).join(' · '))}</small></span><button class="btn sm danger" data-act="runUninst" data-v="${esc(u.id)}">Запустить</button></div>`).join('')}
+    <p class="mute" style="font-size:12px">После удаления нажмите «Обновить скан».</p>`, fn: async () => {} };
+  render();
+}
+async function playPath(path) {
+  const a = $('#audio');
+  if (S.playing === path && !a.paused) { a.pause(); render(); return; }
+  if (S.playing !== path) {
+    if (!T) { toast('Прослушивание работает в приложении'); return; }
+    a.src = toSrc(path); S.playing = path;
+  }
+  try { await a.play(); } catch (e) { const ext = path.split('.').pop().toLowerCase(); toast(['aif', 'aiff', 'rex', 'rx2', 'caf', 'w64'].includes(ext) ? `Формат .${ext} не воспроизводится встроенным плеером` : 'Не удалось воспроизвести файл'); }
+  render();
 }
 
 /* --- action bar / modal --- */
@@ -316,14 +392,36 @@ function addSel(item) { S.sel.set(selKey(item.kind, item.key), item); }
 function togSel(item) { const k = selKey(item.kind, item.key); S.sel.has(k) ? S.sel.delete(k) : S.sel.set(k, item); }
 
 const A = {
-  view: (el) => { S.view = el.dataset.v; if (S.view === 'samples') loadKids().then(render); render(); },
+  view: (el) => {
+    S.view = el.dataset.v; render();
+    if (S.view === 'samples') loadKids().then(render);
+    if (S.view === 'settings') invoke('cache_info').then((c) => { S.cache = c; render(); }).catch(() => {});
+  },
   filter: (el) => { S.filter = el.dataset.v; render(); },
   selP: (el) => { S.selP = el.dataset.v; render(); },
   selPr: (el) => { S.selPr = +el.dataset.v; render(); },
   togP: (el) => { togSel({ kind: 'plugin', key: el.dataset.path, label: el.dataset.label, size: +el.dataset.size }); render(); },
   selPluginRec: (el) => { const p = visiblePlugins().find((x) => x.name === el.dataset.v); p.formats.filter((f) => p.recommended.includes(f.path)).forEach((f) => addSel({ kind: 'plugin', key: f.path, label: p.name + ' ' + FMT[f.format], size: f.size })); render(); },
   selRec: () => { visiblePlugins().forEach((p) => p.formats.filter((f) => p.recommended.includes(f.path)).forEach((f) => addSel({ kind: 'plugin', key: f.path, label: p.name + ' ' + FMT[f.format], size: f.size }))); render(); toast(`Выбрано: ${S.sel.size}. Проверьте и нажмите «В корзину».`); },
-  goDir: async (el) => { S.dir = el.dataset.v || null; S.file = null; await loadKids(); render(); },
+  goDir: (el) => goDir(el.dataset.v || null),
+  histBack: () => { if (S.hpos > 0) { S.hpos--; goDir(S.hist[S.hpos], false); } },
+  histFwd: () => { if (S.hpos < S.hist.length - 1) { S.hpos++; goDir(S.hist[S.hpos], false); } },
+  play: (el, e) => { e.stopPropagation(); playPath(el.dataset.path); },
+  playToggle: () => { const a = $('#audio'); a.paused ? a.play() : a.pause(); render(); },
+  playStop: () => { const a = $('#audio'); a.pause(); a.removeAttribute('src'); S.playing = null; render(); },
+  seek: (el, e) => { const a = $('#audio'); const r = el.getBoundingClientRect(); if (a.duration) a.currentTime = (e.clientX - r.left) / r.width * a.duration; },
+  reveal: (el, e) => { e.stopPropagation(); reveal(el.dataset.path); },
+  webSearch: (el) => invoke('web_search', { query: el.dataset.v + ' plugin' }).catch((e) => toast(String(e))),
+  uninstallMenu: (el) => uninstallFor(el.dataset.v),
+  runUninst: async (el) => { S.modal = null; render(); try { await invoke('run_uninstaller', { id: el.dataset.v }); toast('Деинсталлятор запущен. После удаления обновите скан.'); } catch (e) { toast(String(e)); } },
+  menuPick: (el) => { const it = S.menu.items[+el.dataset.i]; S.menu = null; render(); Promise.resolve(it.fn()).catch((e) => toast(String(e))); },
+  cancelDups: () => invoke('cancel_duplicates'),
+  setStrict: (el) => { S.settings.strict_names = el.checked; },
+  clearCache: () => {
+    S.modal = { title: 'Очистить кэш?', ok: 'Очистить', danger: false, body: `<p>Будет удалено ${sz(S.cache.bytes)}: кэш разобранных проектов и журнал ошибок. Настройки, папки и корзина останутся. Следующий скан прочитает проекты заново и займёт больше времени.</p>`,
+      fn: async () => { const n = await invoke('clear_cache'); S.cache = await invoke('cache_info'); render(); toast(`Освобождено ${sz(n)}`); } };
+    render();
+  },
   selFile: async (el) => { S.file = await invoke('sample_info', { idx: +el.dataset.v }); render(); },
   onlyUnused: () => { S.onlyUnused = !S.onlyUnused; render(); },
   allowOld: (el) => { S.allowOld = el.checked; render(); },
@@ -334,7 +432,11 @@ const A = {
     [...files, ...old].forEach((f) => addSel({ kind: 'sample', key: String(f.idx), label: f.name, size: f.size, allowOld: S.allowOld }));
     render(); toast(`Выбрано файлов: ${S.sel.size}`);
   },
-  findDups: async () => { S.dupBusy = true; render(); S.dups = await invoke('find_duplicates', { minSize: 1048576 }); S.dupBusy = false; render(); },
+  findDups: async () => {
+    S.dupBusy = true; S.dupProg = null; render();
+    try { const r = await invoke('find_duplicates', { minSize: 1048576 }); if (r) S.dups = r; else toast('Поиск остановлен'); }
+    finally { S.dupBusy = false; render(); }
+  },
   selDupGroup: (el) => {
     const [, files] = S.dups[+el.dataset.v];
     const candidates = files.filter((f) => f.state === 'unused');
@@ -350,6 +452,7 @@ const A = {
       fn: doTrash };
     render();
   },
+  closeMenu: () => { S.menu = null; render(); },
   closeModal: (el, e) => { if (e.target.closest('[data-stop]') && !el.classList.contains('btn')) return; S.modal = null; render(); },
   modalOk: async () => { const fn = S.modal.fn; S.modal = null; render(); await fn(); },
   restore: async (el) => { const id = el.dataset.v; const errs = await invoke('trash_restore', { ids: [id] }); await afterTrashChange(); errs.length ? toast(errs[0]) : toast('Вернул на прежнее место'); },
@@ -404,6 +507,7 @@ async function afterTrashChange() {
 
 /* ---------- events ---------- */
 document.addEventListener('click', (e) => {
+  if (S.menu && !e.target.closest('.menu')) { S.menu = null; render(); return; }
   const el = e.target.closest('[data-act]');
   if (!el) return;
   if (el.tagName === 'SELECT' || (el.tagName === 'INPUT' && el.type === 'number')) return;
@@ -423,9 +527,80 @@ document.addEventListener('input', (e) => {
   S.q = e.target.value;
   const pos = e.target.selectionStart; render(); const q = $('#q'); q.focus(); q.setSelectionRange(pos, pos);
 });
+document.addEventListener('contextmenu', (e) => {
+  const el = e.target.closest('[data-ctx]');
+  e.preventDefault();
+  if (!el || !S.report) { if (S.menu) { S.menu = null; render(); } return; }
+  const d = el.dataset, path = d.path;
+  const items = [];
+  if (d.ctx === 'plugin') {
+    const p = visiblePlugins().find((x) => x.name === d.v);
+    if (!p) return;
+    S.selP = p.name;
+    items.push({ label: 'Показать в проводнике', fn: () => reveal(p.formats[0].path) });
+    items.push({ label: 'Деинсталлировать…', hint: 'утилита удаления производителя', fn: () => uninstallFor(p.name) });
+    items.push({ label: 'Найти в интернете', hint: 'картинки интерфейса', fn: () => invoke('web_search', { query: p.name + ' plugin' }) });
+    items.push('-');
+    items.push({ label: 'Выбрать рекомендованное для корзины', disabled: !p.recommended.length, fn: () => A.selPluginRec({ dataset: { v: p.name } }) });
+    items.push({ label: 'Скопировать путь', fn: () => copyText(p.formats.map((f) => f.path).join('\n')) });
+  } else if (d.ctx === 'sample') {
+    const allowed = d.state === 'unused' || (d.state === 'oldonly' && S.allowOld);
+    items.push({ label: S.playing === path ? 'Пауза' : 'Прослушать', fn: () => playPath(path) });
+    items.push({ label: 'Показать в проводнике', fn: () => reveal(path) });
+    items.push({ label: 'Скопировать путь', fn: () => copyText(path) });
+    items.push('-');
+    items.push({ label: allowed ? 'Выбрать для корзины' : 'Нельзя убрать: файл нужен', disabled: !allowed, fn: () => { togSel({ kind: 'sample', key: d.idx, label: d.name, size: +d.size, allowOld: S.allowOld }); render(); } });
+  } else if (d.ctx === 'dir') {
+    items.push({ label: 'Открыть', fn: () => goDir(path) });
+    items.push({ label: 'Показать в проводнике', fn: () => reveal(path) });
+    items.push({ label: 'Скопировать путь', fn: () => copyText(path) });
+  } else if (d.ctx === 'trash') {
+    items.push({ label: 'Вернуть на место', fn: () => A.restore({ dataset: { v: d.id } }) });
+    items.push({ label: 'Показать исходную папку', fn: () => reveal(path) });
+  } else if (d.ctx === 'path') {
+    items.push({ label: 'Показать в проводнике', fn: () => reveal(path) });
+    items.push({ label: 'Скопировать путь', fn: () => copyText(path) });
+  }
+  openMenu(e, items);
+});
+document.addEventListener('mouseup', (e) => {
+  if (S.view !== 'samples') return;
+  if (e.button === 3) { e.preventDefault(); A.histBack(); }
+  if (e.button === 4) { e.preventDefault(); A.histFwd(); }
+});
+let hoverTimer;
+document.addEventListener('mouseover', (e) => {
+  const row = e.target.closest('[data-img]');
+  const tip = $('#tip');
+  clearTimeout(hoverTimer);
+  if (!row) { tip.hidden = true; return; }
+  hoverTimer = setTimeout(() => {
+    tip.innerHTML = `<img src="${row.dataset.img}" alt="">`;
+    const r = row.getBoundingClientRect();
+    tip.style.left = Math.min(r.left + 200, innerWidth - 380) + 'px';
+    tip.style.top = Math.min(r.bottom + 4, innerHeight - 260) + 'px';
+    tip.hidden = false;
+  }, 300);
+});
 document.addEventListener('keydown', (e) => {
+  if (e.altKey && S.view === 'samples' && e.key === 'ArrowLeft') { e.preventDefault(); A.histBack(); return; }
+  if (e.altKey && S.view === 'samples' && e.key === 'ArrowRight') { e.preventDefault(); A.histFwd(); return; }
+  if (e.key === 'Escape' && S.menu) { S.menu = null; render(); return; }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.row[data-act]')) { e.preventDefault(); e.target.click(); }
   if (e.key === 'Escape' && S.modal) { S.modal = null; render(); }
 });
 
 init().catch((e) => { document.body.insertAdjacentHTML('beforeend', `<pre style="color:#ef7b72;padding:20px">${esc(e)}</pre>`); });
+
+/* audio clock: updates only the time label and seek bar, no full re-render */
+(function () {
+  const a = $('#audio');
+  a.addEventListener('timeupdate', () => {
+    const t = $('#ptime'), b = $('#pseek');
+    const f = (x) => (isFinite(x) ? Math.floor(x / 60) + ':' + String(Math.floor(x % 60)).padStart(2, '0') : '–');
+    if (t) t.textContent = f(a.currentTime) + ' / ' + f(a.duration);
+    if (b && a.duration) b.style.width = (a.currentTime / a.duration * 100) + '%';
+  });
+  a.addEventListener('ended', () => render());
+  a.addEventListener('error', () => { const e = $('#perr'); if (e && S.playing) e.textContent = 'Этот файл не воспроизводится встроенным плеером.'; });
+})();

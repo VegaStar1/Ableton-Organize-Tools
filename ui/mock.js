@@ -50,7 +50,7 @@
   for (let i = 1; i <= 10; i++) add('Loopmasters/Deep Tech', `DT_Loop_${i}.wav`, 60 + i * 12, i < 3 ? 'used' : 'unused', i < 3 ? ['Beat 042'] : []);
   for (let i = 1; i <= 12; i++) add('Old Packs 2019', `Trap_Essentials_${i}.wav`, 80 + i * 25, 'unused');
   for (let i = 1; i <= 6; i++) add('Projects/Recorded', `Vocal_Take_${i}.wav`, 40 + i * 4, 'projectowned');
-  const state = { gone: new Set(), trash: [], settings: null };
+  const state = { gone: new Set(), trash: [], settings: null, cache: 38 * MB };
   const roots = ['D:/Samples'];
   const sub = (e) => e.slash;
   const info = (i) => { const e = files[i]; return { idx: i, path: e.slash, name: e.slash.split('/').pop(), size: e.size, mtime: 0, state: e.state, by_name: false, used_by: e.by }; };
@@ -83,11 +83,11 @@
         .map(([daw, name, installed, support]) => ({ daw, name, installed, support, project_dirs: installed ? [`C:\\Users\\you\\Documents\\${name}`] : [] })), first_run: !state.settings, platform: 'windows' }),
     save_settings: async ({ settings }) => { state.settings = settings; },
     run_scan: async () => { for (let i = 0; i <= 10; i++) { (listeners['scan-progress'] || []).forEach(f => f({ payload: i < 4 ? { stage: 'plugins', done: 0, total: 0 } : i < 8 ? { stage: 'projects', done: i * 26, total: 214 } : { stage: 'samples', done: i * 41000, total: 0 } })); await wait(140); } return report(); },
-    sample_children: async ({ dir }) => children(dir),
+    sample_children: async ({ dir }) => ({ items: children(dir), hidden_files: 0, parent: null }),
     sample_top: async ({ state: st, under, limit }) => files.map((e, i) => [e, i]).filter(([e]) => !e.gone && ({ unused: 'unused', oldonly: 'oldonly', used: 'used', projectowned: 'projectowned' })[st] === e.state && (!under || e.slash.startsWith(under + '/'))).sort((a, b) => b[0].size - a[0].size).slice(0, limit).map(([, i]) => info(i)),
     sample_info: async ({ idx }) => info(idx),
     sample_summary: async () => summary(),
-    find_duplicates: async () => { const mk = i => info(i); return [[{ size: 330 * MB, files: [0, 1] }, [mk(2), mk(5)]], [{ size: 190 * MB, files: [2, 3] }, [mk(30), mk(41)]]]; },
+    find_duplicates: async () => { for (let i = 0; i <= 10; i++) { (listeners['dup-progress'] || []).forEach(f => f({ payload: i < 4 ? { stage: 'quick', done_files: i * 300, total_files: 1200, done_bytes: 0, total_bytes: 0 } : { stage: 'full', done_files: i * 4, total_files: 40, done_bytes: i * 400 * MB, total_bytes: 4 * GB } })); await wait(120); } const mk = i => info(i); return [[{ size: 330 * MB, files: [0, 1] }, [mk(2), mk(5)]], [{ size: 190 * MB, files: [2, 3] }, [mk(30), mk(41)]]]; },
     trash_move: async ({ items }) => {
       const moved = items.map(r => { const id = Math.random().toString(16).slice(2, 10); const it = { id, original_path: r.kind === 'plugin' ? r.key : files[+r.key].slash, stored_path: 'trash/' + id, size: 0, trashed_at: Date.now() / 1000, kind: r.kind, label: r.label };
         if (r.kind === 'sample') { files[+r.key].gone = true; it.size = files[+r.key].size; } else { const f = plugins.flatMap(p => p.formats).find(f => f.path === r.key); it.size = f ? f.size : 0; }
@@ -95,6 +95,13 @@
       return { moved, errors: [] };
     },
     trash_list: async () => state.trash,
+    cancel_duplicates: async () => {},
+    reveal_path: async () => {},
+    web_search: async () => {},
+    plugin_uninstallers: async ({ name }) => name.startsWith('Massive') ? [] : [{ id: 'k1', name: name + ' 1.4.2', publisher: 'Vendor', version: '1.4.2', location: '' }],
+    run_uninstaller: async () => {},
+    cache_info: async () => ({ bytes: state.cache, files: [], folder: '' }),
+    clear_cache: async () => { const n = state.cache; state.cache = 0; return n; },
     trash_restore: async ({ ids }) => { ids.forEach(id => { const it = state.trash.find(t => t.id === id); if (it && it.kind === 'sample') { const f = files.find(f => f.slash === it.original_path); if (f) f.gone = false; } state.trash = state.trash.filter(t => t.id !== id); }); return []; },
     trash_purge: async ({ ids }) => { const n = state.trash.filter(t => ids.includes(t.id)).reduce((a, t) => a + t.size, 0); state.trash = state.trash.filter(t => !ids.includes(t.id)); return n; },
     trash_empty: async () => { const n = state.trash.reduce((a, t) => a + t.size, 0); state.trash = []; return n; },

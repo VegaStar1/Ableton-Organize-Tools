@@ -10,6 +10,7 @@ pub mod model;
 pub mod plugins;
 pub mod projects;
 pub mod samples;
+pub mod system;
 pub mod trash;
 
 pub use model::*;

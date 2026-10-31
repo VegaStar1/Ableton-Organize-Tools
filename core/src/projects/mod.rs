@@ -55,7 +55,7 @@ pub fn discover(roots: &[PathBuf], daws: &[Daw], include_backups: bool, library_
     out
 }
 
-fn make(daw: Daw, path: PathBuf, md: Option<std::fs::Metadata>, is_library: bool) -> ProjectFile {
+pub fn make(daw: Daw, path: PathBuf, md: Option<std::fs::Metadata>, is_library: bool) -> ProjectFile {
     let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let (size, mtime) = md.map(|m| (m.len(), m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0))).unwrap_or((0, 0));
     ProjectFile { daw, path, name, size, mtime, is_library }

@@ -130,3 +130,22 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 .set select,.set input[type=number]{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
 @media (max-width:1100px){.app{grid-template-columns:170px minmax(0,1fr)}.side{display:none}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* context menu, player, plugin picture */
+.menu{position:fixed;z-index:25;min-width:250px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:5px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.menu button{all:unset;box-sizing:border-box;display:block;width:100%;padding:7px 10px;border-radius:5px;cursor:pointer}
+.menu button:hover:not([disabled]){background:var(--acc-bg)}
+.menu button[disabled]{opacity:.45;cursor:default}
+.menu button.danger{color:var(--bad)}
+.menu button small{display:block;color:var(--mute);font-size:11px}
+.menu hr{border:0;border-top:1px solid var(--line);margin:4px 2px}
+.navb{all:unset;cursor:pointer;width:24px;height:24px;display:inline-grid;place-items:center;border-radius:5px;border:1px solid var(--line);color:var(--fg)!important;margin-right:2px}
+.navb[disabled]{opacity:.35;cursor:default}
+.play{all:unset;cursor:pointer;width:22px;height:22px;flex:none;display:inline-grid;place-items:center;border-radius:50%;border:1px solid var(--line);font-size:9px;color:var(--mute)}
+.play:hover,.play.on{border-color:var(--accent);color:var(--accent)}
+.player{background:var(--acc-bg)}
+.seek{height:6px;border-radius:3px;background:var(--panel2);margin-top:10px;cursor:pointer;overflow:hidden}
+.seek i{display:block;height:100%;width:0;background:var(--accent)}
+.shot{display:block;width:100%;max-height:220px;object-fit:contain;background:#000;border-bottom:1px solid var(--line)}
+.tip{position:fixed;z-index:22;width:360px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px;box-shadow:0 10px 30px rgba(0,0,0,.35);pointer-events:none}
+.tip img{display:block;width:100%;border-radius:4px}
