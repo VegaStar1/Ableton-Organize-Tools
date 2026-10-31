@@ -63,21 +63,37 @@ impl Trash {
 
     pub fn trash(&mut self, path: &Path, kind: &str, label: &str, size: u64) -> Result<TrashItem> {
         if !path.exists() { return Err(Error::Msg(format!("не найден: {}", path.display()))); }
-        let mut bin = bin_dir_for(path, &self.home);
-        if fs::create_dir_all(&bin).is_err() {
-            bin = self.home.join(TRASH_DIR_NAME);
-            fs::create_dir_all(&bin)?;
-        }
         let id = format!("{:x}-{:x}", now(), fnv(path.to_string_lossy().as_bytes()));
-        let dest_dir = bin.join(&id);
-        fs::create_dir_all(&dest_dir)?;
+        // Prefer a bin on the same volume (instant rename); fall back to the home folder.
+        let mut candidates = vec![bin_dir_for(path, &self.home)];
+        let fallback = self.home.join(TRASH_DIR_NAME);
+        if !candidates.contains(&fallback) { candidates.push(fallback); }
+        let mut last: Option<Error> = None;
+        for bin in candidates {
+            match self.try_trash(&bin, &id, path, kind, label, size) {
+                Ok(item) => {
+                    if !self.bins.contains(&bin) { self.bins.push(bin); }
+                    return Ok(item);
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| Error::Msg("корзина недоступна".into())))
+    }
+
+    fn try_trash(&self, bin: &Path, id: &str, path: &Path, kind: &str, label: &str, size: u64) -> Result<TrashItem> {
+        let ctx = |op: &str, p: &Path, e: std::io::Error| Error::Msg(format!("{op} {}: {e}", p.display()));
+        let dest_dir = bin.join(id);
+        fs::create_dir_all(&dest_dir).map_err(|e| ctx("не удалось создать", &dest_dir, e))?;
         let dest = dest_dir.join(path.file_name().ok_or_else(|| Error::Msg("bad path".into()))?);
-        move_path(path, &dest)?;
-        let item = TrashItem { id, original_path: path.to_string_lossy().into_owned(), stored_path: dest.to_string_lossy().into_owned(), size, trashed_at: now(), kind: kind.into(), label: label.into() };
-        let mut m = load(&bin);
+        if let Err(e) = move_path(path, &dest) {
+            let _ = fs::remove_dir(&dest_dir);
+            return Err(Error::Msg(format!("не удалось переместить {} в {}: {e}", path.display(), dest.display())));
+        }
+        let item = TrashItem { id: id.into(), original_path: path.to_string_lossy().into_owned(), stored_path: dest.to_string_lossy().into_owned(), size, trashed_at: now(), kind: kind.into(), label: label.into() };
+        let mut m = load(bin);
         m.items.push(item.clone());
-        save(&bin, &m)?;
-        if !self.bins.contains(&bin) { self.bins.push(bin); }
+        save(bin, &m)?;
         Ok(item)
     }
 
