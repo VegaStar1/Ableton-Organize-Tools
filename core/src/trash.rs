@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const TRASH_DIR_NAME: &str = ".ableton-organizer-trash";
+pub const TRASH_DIR_NAME: &str = ".debridr-trash";
+/// Folder name used before the rename; still skipped by scans.
+pub const OLD_TRASH_DIR_NAME: &str = ".ableton-organizer-trash";
 const MANIFEST: &str = "manifest.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

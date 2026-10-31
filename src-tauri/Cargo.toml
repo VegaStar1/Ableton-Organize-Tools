@@ -1,5 +1,5 @@
 [package]
-name = "ableton-organizer"
+name = "debridr"
 version = "0.1.0"
 edition = "2021"
 description = "Find unused plugins and samples across your DAW projects"

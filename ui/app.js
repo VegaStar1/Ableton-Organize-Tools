@@ -1,5 +1,5 @@
 'use strict';
-/* Ableton Organizer UI. No build step. Talks to Rust through Tauri commands;
+/* Debridr UI. No build step. Talks to Rust through Tauri commands;
    in a plain browser it falls back to mock.js for design work. */
 const T = window.__TAURI__;
 const invoke = (c, a) => (T ? T.core.invoke(c, a) : window.__MOCK__.invoke(c, a));
@@ -25,6 +25,7 @@ const S = {
   dir: null, kids: [], file: null, allowOld: false, onlyUnused: false,
   sel: new Map(), trash: [], dups: null, modal: null, dawName: {},
   hidden: 0, hist: [null], hpos: 0, loading: false, dupProg: null, menu: null, playing: null, cache: null,
+  dock: null, waves: {}, wavePending: {},
 };
 const toSrc = (path) => {
   const native = S.boot && S.boot.platform === 'windows' ? path.replace(/\//g, '\\') : path;
@@ -112,13 +113,14 @@ function render() {
   const views = { plugins: [vPlugins, sPlugin], projects: [vProjects, sProject], samples: [vSamples, sSample], dups: [vDups, sDups], trash: [vTrash, sTrash], settings: [vSettings, sSettings] };
   const [main, side] = views[S.view];
   const keepScroll = $('.list') ? $('.list').scrollTop : 0;
-  root.innerHTML = `<div class="app">${nav()}<main class="card main">${main()}${actionBar()}</main><aside class="card side">${side()}</aside></div>${S.menu ? menu() : ''}${S.modal ? modal() : ''}`;
+  root.innerHTML = `<div class="app ${S.dock ? 'has-dock' : ''}">${nav()}<main class="card main">${main()}${actionBar()}</main><aside class="card side">${side()}</aside>${dock()}</div>${S.menu ? menu() : ''}${S.modal ? modal() : ''}`;
   const l = $('.list'); if (l) l.scrollTop = keepScroll;
+  paintWaves();
 }
 
 function nav() {
   const items = [['plugins', 'Плагины'], ['projects', 'Проекты'], ['samples', 'Сэмплы'], ['dups', 'Дубликаты'], ['trash', 'Корзина'], ['settings', 'Настройки']];
-  return `<nav class="card nav"><div class="brand">Ableton Organizer<small>${S.settings.daws.map((d) => S.dawName[d]).join(' · ')}</small></div>` +
+  return `<nav class="card nav"><div class="brand">Debridr<small>${S.settings.daws.map((d) => S.dawName[d]).join(' · ')}</small></div>` +
     items.map(([k, l]) => `<button data-act="view" data-v="${k}" aria-current="${S.view === k}">${l}${k === 'trash' && S.trash.length ? `<span class="badge">${S.trash.length}</span>` : ''}</button>`).join('') +
     `<div class="sp"></div><div class="mute" style="padding:8px 10px;font-size:11.5px">Скан: ${nf(S.report.timings.plugins_ms + S.report.timings.projects_ms + S.report.timings.samples_ms + S.report.timings.analysis_ms, 0)} мс<br>из кэша проектов: ${S.report.timings.cached_projects}</div></nav>`;
 }
@@ -226,23 +228,61 @@ function vSamples() {
         <span class="num mono">${k.is_dir ? nf(k.files, 0) : ''}</span><span class="num mono">${sz(k.bytes)}</span></div>`;
     }).join('') || `<div class="empty">${S.loading ? 'Загружаю…' : 'Здесь пусто'}</div>`) + (S.hidden ? `<div class="empty" style="padding:14px">И ещё ${nf(S.hidden, 0)} мелких файлов в этой папке. Показаны самые крупные.</div>` : '') + '</div>';
 }
-function player() {
-  if (!S.playing) return '';
-  return `<section class="player"><h3>Сейчас играет</h3><div class="mono" style="font-size:12px;word-break:break-all">${esc(S.playing.split('/').pop())}</div>
-    <div style="display:flex;gap:8px;align-items:center;margin-top:8px"><button class="btn sm" data-act="playToggle">${$('#audio') && !$('#audio').paused ? 'Пауза' : 'Играть'}</button><button class="btn sm" data-act="playStop">Стоп</button><span class="mono mute" id="ptime"></span></div>
-    <div class="seek" data-act="seek"><i id="pseek"></i></div><div class="mute" id="perr" style="font-size:12px"></div></section>`;
+function dock() {
+  if (!S.dock) return '';
+  const a = $('#audio'), on = S.playing === S.dock && a && !a.paused;
+  const name = S.dock.split('/').pop();
+  return `<div class="card dock"><button class="bigplay" data-act="dockPlay" aria-label="${on ? 'Пауза' : 'Играть'}">${on ? '❚❚' : '▶'}</button>
+    <div class="dock-info"><b title="${esc(S.dock)}">${esc(name)}</b><span class="mono mute" id="ptime">${waveMeta(S.dock)}</span></div>
+    <div class="dock-wave" data-act="dockSeek"><canvas data-wave="${esc(S.dock)}" data-b="1600" data-dock="1"></canvas></div>
+    <button class="x" data-act="dockClose" aria-label="Закрыть плеер" title="Закрыть">✕</button></div>`;
+}
+function waveMeta(path) {
+  const w = S.waves['1600|' + path];
+  if (!w) return S.wavePending['1600|' + path] ? 'строю волну…' : '';
+  const f = (x) => Math.floor(x / 60) + ':' + String(Math.floor(x % 60)).padStart(2, '0');
+  return `${f(w.duration)} · ${nf(w.sample_rate / 1000, 1)} кГц · ${w.channels === 1 ? 'моно' : w.channels === 2 ? 'стерео' : w.channels + ' кан.'}`;
+}
+function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function drawWave(c, w, progress) {
+  const dpr = window.devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
+  if (!W || !H) return;
+  c.width = W * dpr; c.height = H * dpr;
+  const g = c.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
+  if (w && w.error) { g.fillStyle = cssVar('--mute'); g.font = '11px sans-serif'; g.fillText(w.error, 6, H / 2 + 4); return; }
+  if (!w) { g.fillStyle = cssVar('--line'); g.fillRect(0, H / 2, W, 1); return; }
+  const n = w.peaks.length / 2, mid = H / 2, played = cssVar('--accent'), rest = cssVar('--mute');
+  for (let x = 0; x < W; x++) {
+    const i = Math.floor(x / W * n), lo = w.peaks[i * 2], hi = w.peaks[i * 2 + 1];
+    g.fillStyle = progress != null && x / W <= progress ? played : rest;
+    const y1 = mid - hi * mid * 0.95, y2 = mid - lo * mid * 0.95;
+    g.fillRect(x, y1, 1, Math.max(1, y2 - y1));
+  }
+  if (progress != null && progress > 0) { g.fillStyle = cssVar('--fg'); g.fillRect(Math.round(progress * W), 0, 1.5, H); }
+}
+function progressOf(path) { const a = $('#audio'); return S.playing === path && a && a.duration ? a.currentTime / a.duration : null; }
+function paintWaves() {
+  document.querySelectorAll('canvas[data-wave]').forEach((c) => {
+    const path = c.dataset.wave, b = +c.dataset.b, key = b + '|' + path;
+    const w = S.waves[key];
+    drawWave(c, w, progressOf(path) ?? (c.dataset.dock ? 0 : null));
+    if (w || S.wavePending[key]) return;
+    S.wavePending[key] = true;
+    invoke('wave', { path, buckets: b }).then((res) => { S.waves[key] = res; }, (e) => { S.waves[key] = { error: String(e).slice(0, 80) }; })
+      .finally(() => { delete S.wavePending[key]; document.querySelectorAll(`canvas[data-wave]`).forEach((cc) => { if (cc.dataset.wave === path && +cc.dataset.b === b) drawWave(cc, S.waves[key], progressOf(path)); }); const m = $('#ptime'); if (m && S.dock === path) m.textContent = waveMeta(path); });
+  });
 }
 function sSample() {
   const f = S.file;
   const s = S.report.samples;
-  if (!f) return player() + `<section><h2>Как читать цвета</h2></section><section>
+  if (!f) return `<section><h2>Как читать цвета</h2></section><section>
     <div class="li"><span class="pill ok">Нужен</span><span class="mute">используется недавним проектом</span></div>
     <div class="li"><span class="pill warn">Только в старых</span><span class="mute">только проекты старше ${S.settings.old_days} дн.</span></div>
     <div class="li"><span class="pill bad">Нигде</span><span class="mute">ни одной ссылки в проектах</span></div>
     <div class="li"><span class="pill neu">Часть проекта</span><span class="mute">лежит в папке проекта</span></div></section>
     <section><h3>Итого по библиотеке</h3><div class="note info">Можно убрать до ${sz(s.unused_bytes)} (${nf(s.unused_files, 0)} файлов). Всё идёт в Корзину программы, потом можно вернуть.</div></section>`;
   const st = STATE[f.state];
-  return player() + `<section><h2>${esc(f.name)}</h2><div class="path">${esc(f.path)}</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="pill ${st[0]}">${st[1]}</span><span class="mono mute">${sz(f.size)}</span><button class="btn sm" data-act="play" data-path="${esc(f.path)}" data-name="${esc(f.name)}">${S.playing === f.path ? 'Пауза' : 'Прослушать'}</button><button class="btn sm" data-act="reveal" data-path="${esc(f.path)}">Показать в проводнике</button></div></section>
+  return `<section><h2>${esc(f.name)}</h2><div class="path">${esc(f.path)}</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="pill ${st[0]}">${st[1]}</span><span class="mono mute">${sz(f.size)}</span><button class="btn sm" data-act="play" data-path="${esc(f.path)}" data-name="${esc(f.name)}">${S.playing === f.path ? 'Пауза' : 'Прослушать'}</button><button class="btn sm" data-act="reveal" data-path="${esc(f.path)}">Показать в проводнике</button></div></section>
   <section><h3>Используется в проектах</h3>${f.used_by.length ? f.used_by.map((n) => `<div class="li"><span>${esc(n)}</span></div>`).join('') : '<span class="mute">Ни в одном</span>'}
   ${f.by_name ? '<div class="note">Найден по имени файла: путь в проекте указывает на другое место. Файл оставлен на всякий случай.</div>' : ''}
   ${f.state === 'oldonly' ? '<div class="note">Используется только в проектах старше года. Включите «Разрешить файлы из старых проектов», если уверены.</div>' : ''}
@@ -258,7 +298,7 @@ function vDups() {
     (d ? `<div class="stats"><div class="stat"><b>${d.length}</b><span>групп копий</span></div><div class="stat"><b>${sz(reclaim)}</b><span>можно освободить</span></div></div>` : '') +
     `<div class="list">${d ? (d.map(([g, files], gi) => `<div style="padding:10px 16px;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between;margin-bottom:6px"><b>${esc(files[0].name)} <span class="mute">× ${files.length}</span></b><span class="mono mute">${sz(g.size)} каждая</span></div>
       ${files.map((f) => { const on = S.sel.has(selKey('sample', f.idx)); const ok = f.state === 'unused'; const st = STATE[f.state];
-        return `<div class="li"><span style="display:flex;gap:8px;align-items:center;min-width:0"><input type="checkbox" data-act="togS" data-idx="${f.idx}" data-label="${esc(f.name)}" data-size="${f.size}" ${on ? 'checked' : ''} ${ok ? '' : 'disabled'}><span class="path" style="margin:0">${esc(f.path)}</span></span><span class="pill ${st[0]}">${st[1]}</span></div>`; }).join('')}
+        return `<div class="li dupli" data-ctx="sample" data-path="${esc(f.path)}" data-idx="${f.idx}" data-name="${esc(f.name)}" data-size="${f.size}" data-state="${f.state}"><span style="display:flex;gap:8px;align-items:center;min-width:0"><input type="checkbox" data-act="togS" data-idx="${f.idx}" data-label="${esc(f.name)}" data-size="${f.size}" ${on ? 'checked' : ''} ${ok ? '' : 'disabled'}><button class="play ${S.playing === f.path ? 'on' : ''}" data-act="play" data-path="${esc(f.path)}" data-name="${esc(f.name)}" aria-label="Прослушать">${S.playing === f.path ? '❚❚' : '▶'}</button><span class="path" style="margin:0">${esc(f.path)}</span></span><canvas class="mini" data-wave="${esc(f.path)}" data-b="300" data-act="play" data-path="${esc(f.path)}"></canvas><span class="pill ${st[0]}">${st[1]}</span></div>`; }).join('')}
       <button class="btn sm" style="margin-top:6px" data-act="selDupGroup" data-v="${gi}">Выбрать лишние копии</button></div>`).join('') || '<div class="empty">Точных копий не найдено</div>') : `<div class="empty">${S.dupBusy ? 'Идёт поиск. Можно переключаться на другие разделы.' : 'Нажмите «Найти дубликаты сэмплов»'}</div>`}</div>`;
 }
 function dupPct() {
@@ -346,6 +386,7 @@ async function uninstallFor(name) {
 }
 async function playPath(path) {
   const a = $('#audio');
+  S.dock = path;
   if (S.playing === path && !a.paused) { a.pause(); render(); return; }
   if (S.playing !== path) {
     if (!T) { toast('Прослушивание работает в приложении'); return; }
@@ -422,7 +463,16 @@ const A = {
       fn: async () => { const n = await invoke('clear_cache'); S.cache = await invoke('cache_info'); render(); toast(`Освобождено ${sz(n)}`); } };
     render();
   },
-  selFile: async (el) => { S.file = await invoke('sample_info', { idx: +el.dataset.v }); render(); },
+  selFile: async (el) => { S.file = await invoke('sample_info', { idx: +el.dataset.v }); S.dock = S.file.path; render(); },
+  dockPlay: () => playPath(S.dock),
+  dockClose: () => { const a = $('#audio'); a.pause(); a.removeAttribute('src'); S.playing = null; S.dock = null; render(); },
+  dockSeek: async (el, e) => {
+    const r = el.getBoundingClientRect(), frac = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    const a = $('#audio');
+    if (S.playing !== S.dock) { await playPath(S.dock); }
+    const go = () => { if (a.duration) a.currentTime = frac * a.duration; };
+    a.readyState >= 1 ? go() : a.addEventListener('loadedmetadata', go, { once: true });
+  },
   onlyUnused: () => { S.onlyUnused = !S.onlyUnused; render(); },
   allowOld: (el) => { S.allowOld = el.checked; render(); },
   togS: (el, e) => { e.stopPropagation(); togSel({ kind: 'sample', key: String(el.dataset.idx), label: el.dataset.label, size: +el.dataset.size, allowOld: S.allowOld }); render(); },
@@ -586,6 +636,7 @@ document.addEventListener('keydown', (e) => {
   if (e.altKey && S.view === 'samples' && e.key === 'ArrowLeft') { e.preventDefault(); A.histBack(); return; }
   if (e.altKey && S.view === 'samples' && e.key === 'ArrowRight') { e.preventDefault(); A.histFwd(); return; }
   if (e.key === 'Escape' && S.menu) { S.menu = null; render(); return; }
+  if (e.code === 'Space' && S.dock && !/INPUT|SELECT|TEXTAREA|BUTTON/.test(e.target.tagName) && !e.target.matches('.row')) { e.preventDefault(); playPath(S.dock); return; }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.row[data-act]')) { e.preventDefault(); e.target.click(); }
   if (e.key === 'Escape' && S.modal) { S.modal = null; render(); }
 });
@@ -596,9 +647,12 @@ init().catch((e) => { document.body.insertAdjacentHTML('beforeend', `<pre style=
 (function () {
   const a = $('#audio');
   a.addEventListener('timeupdate', () => {
+    const dc = document.querySelector('canvas[data-dock]');
+    if (dc && S.playing === dc.dataset.wave) drawWave(dc, S.waves['1600|' + dc.dataset.wave], progressOf(dc.dataset.wave));
+    document.querySelectorAll('canvas.mini').forEach((c) => { if (c.dataset.wave === S.playing) drawWave(c, S.waves['300|' + c.dataset.wave], progressOf(c.dataset.wave)); });
     const t = $('#ptime'), b = $('#pseek');
     const f = (x) => (isFinite(x) ? Math.floor(x / 60) + ':' + String(Math.floor(x % 60)).padStart(2, '0') : '–');
-    if (t) t.textContent = f(a.currentTime) + ' / ' + f(a.duration);
+    if (t) t.textContent = f(a.currentTime) + ' / ' + f(a.duration) + (S.waves['1600|' + S.playing] ? ' · ' + waveMeta(S.playing).split(' · ').slice(1).join(' · ') : '');
     if (b && a.duration) b.style.width = (a.currentTime / a.duration * 100) + '%';
   });
   a.addEventListener('ended', () => render());

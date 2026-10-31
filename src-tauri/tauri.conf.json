@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Ableton Organizer",
+  "productName": "Debridr",
   "version": "0.1.0",
-  "identifier": "app.abletonorganizer.desktop",
+  "identifier": "app.debridr.desktop",
   "build": {
     "frontendDist": "../ui"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Ableton Organizer",
+        "title": "Debridr",
         "width": 1360,
         "height": 860,
         "minWidth": 1000,

@@ -9,7 +9,9 @@ use organizer_core::daw::{self, DetectedDaw};
 use organizer_core::duplicates::{self, DupGroup};
 use organizer_core::system::{self, Uninstaller};
 use organizer_core::trash::{Trash, TrashItem};
+use organizer_core::waveform::{self, Wave};
 use organizer_core::UsageState;
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +25,7 @@ struct AppState {
     trash: Mutex<Trash>,
     dup_cancel: AtomicBool,
     uninstallers: Mutex<Option<Vec<Uninstaller>>>,
+    waves: Mutex<HashMap<String, Wave>>,
 }
 type St<'a> = State<'a, AppState>;
 type R<T> = Result<T, String>;
@@ -289,6 +292,24 @@ async fn run_uninstaller(app: AppHandle, id: String) -> R<()> {
     }).await
 }
 
+// ---------- waveform ----------
+
+/// Waveform overview of an audio file. Results are kept in memory for the session.
+#[tauri::command]
+async fn wave(app: AppHandle, path: String, buckets: usize) -> R<Wave> {
+    blocking(move || {
+        let st = app.state::<AppState>();
+        let key = format!("{buckets}|{path}");
+        if let Some(w) = st.waves.lock().map_err(err)?.get(&key) { return Ok(w.clone()); }
+        let fs_path = if cfg!(windows) { PathBuf::from(path.replace('/', "\\")) } else { PathBuf::from(&path) };
+        let w = waveform::compute(&fs_path, buckets).map_err(err)?;
+        let mut cache = st.waves.lock().map_err(err)?;
+        if cache.len() > 400 { cache.clear(); }
+        cache.insert(key, w.clone());
+        Ok(w)
+    }).await
+}
+
 // ---------- program cache ----------
 
 #[derive(Serialize)]
@@ -322,24 +343,38 @@ async fn clear_cache(app: AppHandle) -> R<u64> {
     }).await
 }
 
+/// The app used to be called Ableton Organizer. Carry settings, trash locations
+/// and the project cache over once, so nothing is lost after the rename.
+fn migrate_from_old_name(new_dir: &Path) {
+    if settings_path(new_dir).exists() { return; }
+    let Some(parent) = new_dir.parent() else { return };
+    let old = parent.join("app.abletonorganizer.desktop");
+    if !settings_path(&old).exists() { return; }
+    let _ = std::fs::create_dir_all(new_dir);
+    for name in ["settings.json", "trash-bins.json", "project-cache.json"] {
+        let _ = std::fs::copy(old.join(name), new_dir.join(name));
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let data_dir = app.path().app_data_dir().unwrap_or_else(|_| dirs::data_dir().unwrap_or_default().join("AbletonOrganizer"));
+            let data_dir = app.path().app_data_dir().unwrap_or_else(|_| dirs::data_dir().unwrap_or_default().join("Debridr"));
+            migrate_from_old_name(&data_dir);
             install_panic_hook(log_path(&data_dir));
             let settings: Settings = std::fs::read(settings_path(&data_dir)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
             let bins: Vec<PathBuf> = std::fs::read(bins_path(&data_dir)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
             let home = dirs::home_dir().unwrap_or_default();
             app.manage(AppState { data_dir, settings: Mutex::new(settings), analysis: RwLock::new(None), trash: Mutex::new(Trash::new(home, bins)),
-                dup_cancel: AtomicBool::new(false), uninstallers: Mutex::new(None) });
+                dup_cancel: AtomicBool::new(false), uninstallers: Mutex::new(None), waves: Mutex::new(HashMap::new()) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             boot, save_settings, run_scan, sample_children, sample_top, sample_info, sample_summary,
             find_duplicates, cancel_duplicates, trash_move, trash_list, trash_restore, trash_purge, trash_empty,
-            reveal_path, web_search, plugin_uninstallers, run_uninstaller, cache_info, clear_cache
+            reveal_path, web_search, plugin_uninstallers, run_uninstaller, cache_info, clear_cache, wave
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Ableton Organizer");
+        .expect("error while running Debridr");
 }

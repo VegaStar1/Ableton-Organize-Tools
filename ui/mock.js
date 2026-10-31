@@ -96,6 +96,14 @@
     },
     trash_list: async () => state.trash,
     cancel_duplicates: async () => {},
+    wave: async ({ path, buckets }) => {
+      await wait(150);
+      let h = 0; for (const c of path) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+      const rnd = () => ((h = (h * 1103515245 + 12345) >>> 0) / 4294967296);
+      const peaks = []; const hits = 4 + Math.floor(rnd() * 12);
+      for (let i = 0; i < buckets; i++) { const ph = (i * hits / buckets) % 1; const env = Math.exp(-ph * 6) * (0.4 + rnd() * 0.6); peaks.push(-env, env * (0.85 + rnd() * 0.15)); }
+      return { peaks, duration: 2 + (h % 20), sample_rate: 44100, channels: 2 };
+    },
     reveal_path: async () => {},
     web_search: async () => {},
     plugin_uninstallers: async ({ name }) => name.startsWith('Massive') ? [] : [{ id: 'k1', name: name + ' 1.4.2', publisher: 'Vendor', version: '1.4.2', location: '' }],

@@ -5,7 +5,7 @@ use organizer_core::{PluginFormat, UsageState};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "organizer-cli", about = "Ableton Organizer: command-line front end for the scanning engine")]
+#[command(name = "organizer-cli", about = "Debridr: command-line front end for the scanning engine")]
 struct Cli { #[command(subcommand)] cmd: Cmd }
 
 #[derive(Subcommand)]

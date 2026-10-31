@@ -1,4 +1,4 @@
-//! Scanning and analysis engine for Ableton Organizer.
+//! Scanning and analysis engine for Debridr.
 //!
 //! Design rule: when in doubt, keep the file. Every heuristic here errs on the
 //! side of reporting something as "used".
@@ -12,5 +12,6 @@ pub mod projects;
 pub mod samples;
 pub mod system;
 pub mod trash;
+pub mod waveform;
 
 pub use model::*;

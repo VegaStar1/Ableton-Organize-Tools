@@ -18,24 +18,24 @@ jobs:
       - name: Tests
         run: cargo test -p organizer-core
       - name: Build portable app
-        run: cargo build --release -p ableton-organizer -p organizer-core
+        run: cargo build --release -p debridr -p organizer-core
       - name: Collect files
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item target/release/ableton-organizer.exe "out/Ableton Organizer.exe"
+          Copy-Item target/release/debridr.exe out/Debridr.exe
           Copy-Item target/release/organizer-cli.exe out/
           @"
-          Ableton Organizer (portable)
+          Debridr (portable)
 
           1. Unpack this folder anywhere.
-          2. Run "Ableton Organizer.exe".
+          2. Run "Debridr.exe".
 
           Needs Microsoft Edge WebView2 (already part of Windows 10/11).
-          Settings and cache are stored in %APPDATA%\app.abletonorganizer.desktop
+          Settings and cache are stored in %APPDATA%\app.debridr.desktop
           organizer-cli.exe is the same engine for the command line.
           "@ | Out-File -Encoding utf8 out/README.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: AbletonOrganizer-windows-portable
+          name: Debridr-windows-portable
           path: out/

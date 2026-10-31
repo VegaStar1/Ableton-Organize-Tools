@@ -38,7 +38,7 @@ pub fn scan(roots: &[PathBuf], counter: Option<&AtomicU64>) -> ScanOut {
             let is_preset = PRESET_EXTS.contains(&ext.as_str());
             if !is_preset && !SAMPLE_EXTS.contains(&ext.as_str()) { continue; }
             let p = e.path();
-            if p.components().any(|c| c.as_os_str() == crate::trash::TRASH_DIR_NAME) { continue; }
+            if p.components().any(|c| c.as_os_str() == crate::trash::TRASH_DIR_NAME || c.as_os_str() == crate::trash::OLD_TRASH_DIR_NAME) { continue; }
             let Ok(md) = e.metadata() else { continue };
             let mtime = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
             let f = SampleFile { path: p.to_string_lossy().into_owned(), size: md.len(), mtime };
