@@ -56,20 +56,22 @@ fn save(bin: &Path, m: &Manifest) -> Result<()> {
 }
 fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
 
-pub struct Trash { bins: Vec<PathBuf>, home: PathBuf }
+pub struct Trash { bins: Vec<PathBuf>, home: PathBuf, fixed_bin: Option<PathBuf> }
 
 impl Trash {
     /// `known_bins` are bin folders seen earlier (persisted in settings).
-    pub fn new(home: PathBuf, known_bins: Vec<PathBuf>) -> Self { Self { bins: known_bins, home } }
+    pub fn new(home: PathBuf, known_bins: Vec<PathBuf>) -> Self { Self { bins: known_bins, home, fixed_bin: None } }
+    /// A trash that always uses one folder. Used by tests so parallel runs never share a bin.
+    pub fn isolated(bin: PathBuf) -> Self { Self { bins: vec![], home: bin.clone(), fixed_bin: Some(bin) } }
     pub fn bins(&self) -> &[PathBuf] { &self.bins }
 
     pub fn trash(&mut self, path: &Path, kind: &str, label: &str, size: u64) -> Result<TrashItem> {
         if !path.exists() { return Err(Error::Msg(format!("не найден: {}", path.display()))); }
         let id = format!("{:x}-{:x}", now(), fnv(path.to_string_lossy().as_bytes()));
         // Prefer a bin on the same volume (instant rename); fall back to the home folder.
-        let mut candidates = vec![bin_dir_for(path, &self.home)];
+        let mut candidates = match &self.fixed_bin { Some(b) => vec![b.clone()], None => vec![bin_dir_for(path, &self.home)] };
         let fallback = self.home.join(TRASH_DIR_NAME);
-        if !candidates.contains(&fallback) { candidates.push(fallback); }
+        if self.fixed_bin.is_none() && !candidates.contains(&fallback) { candidates.push(fallback); }
         let mut last: Option<Error> = None;
         for bin in candidates {
             match self.try_trash(&bin, &id, path, kind, label, size) {
@@ -178,7 +180,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("a.wav");
         fs::write(&f, b"123").unwrap();
-        let mut t = Trash::new(d.path().join("home"), vec![]);
+        let mut t = Trash::isolated(d.path().join("bin"));
         let it = t.trash(&f, "sample", "a.wav", 3).unwrap();
         assert!(!f.exists());
         assert_eq!(t.list().len(), 1);
@@ -193,7 +195,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("b.wav");
         fs::write(&f, b"x").unwrap();
-        let mut t = Trash::new(d.path().join("home"), vec![]);
+        let mut t = Trash::isolated(d.path().join("bin"));
         let it = t.trash(&f, "sample", "b", 1).unwrap();
         fs::write(&f, b"new").unwrap();
         assert!(t.restore(&it.id).is_err());
