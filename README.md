@@ -53,7 +53,7 @@ cargo tauri dev
 cargo tauri build
 ```
 
-Для сборки на Windows нужны Rust и WebView2 (есть в Windows 11). На macOS нужен Xcode Command Line Tools. Готовые установщики собирает GitHub Actions (`.github/workflows/build.yml`).
+Портативная версия для Windows без установщика: `cargo build --release -p ableton-organizer` даёт один `.exe`, интерфейс встроен в него. Её же собирает GitHub Actions при каждом пуше: вкладка Actions → последний запуск `windows-portable` → архив `AbletonOrganizer-windows-portable` внизу страницы. Нужен WebView2, он есть в Windows 10 и 11. Сборка для macOS временно отключена.
 
 ## Известные ограничения
 

@@ -1,48 +1,41 @@
-name: build
+name: windows-portable
 on:
   push:
     branches: [main, "claude/**"]
-  pull_request:
   workflow_dispatch:
 
-jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p organizer-core
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
 
-  bundle:
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            args: ""
-            dir: target/release/bundle
-          - os: macos-latest
-            args: "--target universal-apple-darwin"
-            dir: target/universal-apple-darwin/release/bundle
-    runs-on: ${{ matrix.os }}
+jobs:
+  build:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo install tauri-cli --version "^2" --locked
-      - run: cargo tauri build ${{ matrix.args }}
+      - name: Tests
+        run: cargo test -p organizer-core
+      - name: Build portable app
+        run: cargo build --release -p ableton-organizer -p organizer-core
+      - name: Collect files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item target/release/ableton-organizer.exe "out/Ableton Organizer.exe"
+          Copy-Item target/release/organizer-cli.exe out/
+          @"
+          Ableton Organizer (portable)
+
+          1. Unpack this folder anywhere.
+          2. Run "Ableton Organizer.exe".
+
+          Needs Microsoft Edge WebView2 (already part of Windows 10/11).
+          Settings and cache are stored in %APPDATA%\app.abletonorganizer.desktop
+          organizer-cli.exe is the same engine for the command line.
+          "@ | Out-File -Encoding utf8 out/README.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ableton-organizer-${{ matrix.os }}
-          path: |
-            ${{ matrix.dir }}/nsis/*.exe
-            ${{ matrix.dir }}/msi/*.msi
-            ${{ matrix.dir }}/dmg/*.dmg
+          name: AbletonOrganizer-windows-portable
+          path: out/
