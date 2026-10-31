@@ -120,6 +120,8 @@ pub struct SampleEntry {
     pub mtime: u64,
     pub state: UsageState,
     pub by_name: bool,
+    /// Moved to the in-app trash after the scan.
+    pub gone: bool,
 }
 
 pub struct SampleIndex {
@@ -213,7 +215,7 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
     let mut proj_dirs_lower: HashSet<String> = HashSet::new();
 
     // Index samples by lowercase path first (used for missing-file checks and reference matching).
-    let mut entries: Vec<SampleEntry> = sample_files.into_iter().map(|f| SampleEntry { slash: slash(&f.path), size: f.size, mtime: f.mtime, state: UsageState::Unused, by_name: false }).collect();
+    let mut entries: Vec<SampleEntry> = sample_files.into_iter().map(|f| SampleEntry { slash: slash(&f.path), size: f.size, mtime: f.mtime, state: UsageState::Unused, by_name: false, gone: false }).collect();
     let mut lookup: HashMap<String, u32> = entries.iter().enumerate().map(|(i, e)| (e.slash.to_lowercase(), i as u32)).collect();
     let mut refs: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut unresolved: HashMap<String, Vec<u32>> = HashMap::new();
@@ -406,6 +408,7 @@ impl SampleIndex {
         let mut map: HashMap<String, Child> = HashMap::new();
         let roots: Vec<String> = self.roots.iter().map(|r| r.trim_end_matches('/').to_string()).collect();
         for (i, e) in self.entries.iter().enumerate() {
+            if e.gone { continue; }
             let rest: &str;
             let base: String;
             match dir {
@@ -440,6 +443,25 @@ impl SampleIndex {
         v
     }
 
+    /// Mark a file as moved to / restored from the trash and recompute totals.
+    pub fn set_gone_by_path(&mut self, fs_path: &str, gone: bool) {
+        let want = slash(fs_path);
+        if let Some(e) = self.entries.iter_mut().find(|e| e.slash.eq_ignore_ascii_case(&want)) { e.gone = gone; }
+    }
+    pub fn summary(&self) -> SampleSummary {
+        let mut s = SampleSummary::default();
+        for e in self.entries.iter().filter(|e| !e.gone) {
+            s.files += 1; s.bytes += e.size;
+            match e.state {
+                UsageState::Used => s.used_bytes += e.size,
+                UsageState::OldOnly => s.old_bytes += e.size,
+                UsageState::ProjectOwned => s.owned_bytes += e.size,
+                UsageState::Unused => { s.unused_bytes += e.size; s.unused_files += 1 }
+            }
+        }
+        s
+    }
+
     pub fn file_info(&self, idx: u32) -> FileInfo {
         let e = &self.entries[idx as usize];
         let used_by = self.used_by.get(&idx).map(|v| v.iter().map(|&p| self.project_names[p as usize].clone()).collect()).unwrap_or_default();
@@ -449,7 +471,7 @@ impl SampleIndex {
     /// Largest files with a given state, optionally under a directory.
     pub fn top_files(&self, state: UsageState, under: Option<&str>, limit: usize) -> Vec<FileInfo> {
         let pre = under.map(|d| format!("{}/", slash(d).trim_end_matches('/')));
-        let mut idx: Vec<u32> = self.entries.iter().enumerate().filter(|(_, e)| e.state == state
+        let mut idx: Vec<u32> = self.entries.iter().enumerate().filter(|(_, e)| !e.gone && e.state == state
             && pre.as_ref().map_or(true, |p| e.slash.len() > p.len() && e.slash.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes()))).map(|(i, _)| i as u32).collect();
         idx.sort_by(|&a, &b| self.entries[b as usize].size.cmp(&self.entries[a as usize].size));
         idx.truncate(limit);

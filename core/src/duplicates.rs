@@ -41,7 +41,7 @@ fn full_hash(path: &std::path::Path) -> Option<[u8; 32]> {
 pub fn find(index: &SampleIndex, min_size: u64) -> Vec<DupGroup> {
     let mut by_size: HashMap<u64, Vec<u32>> = HashMap::new();
     for (i, e) in index.entries.iter().enumerate() {
-        if e.size >= min_size { by_size.entry(e.size).or_default().push(i as u32); }
+        if !e.gone && e.size >= min_size { by_size.entry(e.size).or_default().push(i as u32); }
     }
     let cands: Vec<(u64, Vec<u32>)> = by_size.into_iter().filter(|(_, v)| v.len() > 1).collect();
     let mut out: Vec<DupGroup> = cands.par_iter().flat_map(|(size, ids)| {

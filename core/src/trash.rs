@@ -63,8 +63,11 @@ impl Trash {
 
     pub fn trash(&mut self, path: &Path, kind: &str, label: &str, size: u64) -> Result<TrashItem> {
         if !path.exists() { return Err(Error::Msg(format!("не найден: {}", path.display()))); }
-        let bin = bin_dir_for(path, &self.home);
-        fs::create_dir_all(&bin)?;
+        let mut bin = bin_dir_for(path, &self.home);
+        if fs::create_dir_all(&bin).is_err() {
+            bin = self.home.join(TRASH_DIR_NAME);
+            fs::create_dir_all(&bin)?;
+        }
         let id = format!("{:x}-{:x}", now(), fnv(path.to_string_lossy().as_bytes()));
         let dest_dir = bin.join(&id);
         fs::create_dir_all(&dest_dir)?;
