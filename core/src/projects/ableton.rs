@@ -22,8 +22,20 @@ pub fn parse(path: &Path) -> std::io::Result<ProjectScan> {
     }
 }
 
+/// Whole file, gunzipped when needed, up to `limit` bytes.
+pub fn read_decompressed(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut f = File::open(path)?;
+    let mut magic = [0u8; 2];
+    let n = f.read(&mut magic)?;
+    f.seek(SeekFrom::Start(0))?;
+    let mut out = Vec::new();
+    if n == 2 && magic == [0x1f, 0x8b] { GzDecoder::new(f).take(limit).read_to_end(&mut out)?; } else { f.take(limit).read_to_end(&mut out)?; }
+    Ok(out)
+}
+
 pub fn parse_reader<R: BufRead>(r: R) -> std::io::Result<ProjectScan> {
     let mut rd = Reader::from_reader(r);
+    rd.config_mut().check_end_names = false;
     let mut buf = Vec::new();
     let mut stack: Vec<Vec<u8>> = Vec::new();
     let mut plugins: BTreeSet<(String, Option<PluginFormat>)> = BTreeSet::new();

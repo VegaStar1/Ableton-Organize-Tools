@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-const VERSION: u32 = 1;
+/// Bump whenever parsing changes so old results are re-read.
+const VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Entry {

@@ -172,3 +172,29 @@ fn tree_strict_names_presets_and_change_detection() {
     write_als(&proj.join("P.als"), "<Ableton/>");
     assert!(analysis::projects_changed(&s, &a.stamps).is_some());
 }
+
+#[test]
+fn broken_presets_fall_back_and_alp_is_ignored() {
+    let d = tempfile::tempdir().unwrap();
+    let lib = d.path().join("lib/Pack");
+    fs::create_dir_all(&lib).unwrap();
+    fs::write(lib.join("hit.wav"), b"h").unwrap();
+    fs::write(lib.join("other.wav"), b"o").unwrap();
+    let hit = lib.join("hit.wav").to_string_lossy().replace('\\', "/");
+    // malformed XML (mismatched tags) that still names the sample
+    write_als(&lib.join("Rack.adg"), &format!(r#"<Ableton><Bad><FileRef><Path Value="{hit}"/></FileRef></Wrong></Ableton>"#));
+    fs::write(lib.join("syntax.wav"), b"s").unwrap();
+    let syn = lib.join("syntax.wav").to_string_lossy().replace('\\', "/");
+    // broken markup: the XML reader silently skips this FileRef, the text scan must still find the path
+    write_als(&lib.join("Broken.adv"), &format!(r#"<Ableton><!-- x --><<<FileRef ><Path Value="{syn}"/></FileRef></Ableton>"#));
+    fs::write(lib.join("Pack.alp"), b"\x00\x01binary live pack").unwrap();
+    let proj = d.path().join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    let s = Settings { daws: vec![Daw::Ableton], project_dirs: vec![proj], sample_dirs: vec![d.path().join("lib")], strict_names: false, ..Settings::default() };
+    let a = analysis::run(&s, &|_| {});
+    assert!(a.report.unreadable.is_empty(), "{:?}", a.report.unreadable);
+    let st = |n: &str| a.samples.entries.iter().find(|e| e.slash.ends_with(n)).unwrap().state;
+    assert_eq!(st("Pack/hit.wav"), UsageState::Used, "fallback text reading still protects the sample");
+    assert_eq!(st("Pack/syntax.wav"), UsageState::Used, "syntax-broken preset read by text fallback");
+    assert_eq!(st("Pack/other.wav"), UsageState::Unused);
+}

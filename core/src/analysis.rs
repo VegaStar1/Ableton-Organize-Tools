@@ -117,6 +117,9 @@ pub struct Report {
     pub samples: SampleSummary,
     pub timings: Timings,
     pub warnings: Vec<String>,
+    /// Project or preset files that could not be read at all. Every sample in
+    /// their folders is kept.
+    pub unreadable: Vec<String>,
 }
 
 pub struct SampleEntry {
@@ -178,6 +181,8 @@ fn slash(p: &str) -> String { p.strip_prefix("\\\\?\\").unwrap_or(p).replace('\\
 
 pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
     let mut warnings = Vec::new();
+    let mut unreadable: Vec<String> = Vec::new();
+    let mut unreadable_dirs: Vec<String> = Vec::new();
     let mut tm = Timings::default();
 
     // 1. installed plugins
@@ -243,7 +248,7 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
     let mut scans: Vec<(&ProjectFile, ProjectScan)> = Vec::new();
     for (pf, (sc, cached, err)) in files.iter().zip(results) {
         if cached { tm.cached_projects += 1 } else { tm.parsed_projects += 1 }
-        if let Some(e) = err { warnings.push(format!("Не удалось прочитать проект {e}")); }
+        if let Some(e) = err { unreadable.push(e); unreadable_dirs.push(pf.path.parent().map(|d| slash(&d.to_string_lossy()).to_lowercase()).unwrap_or_default()); }
         else if !cached {
             let use_fp = if pf.daw.support() == SupportLevel::Heuristic { fp } else { 0 };
             cache.entries.insert(pf.path.to_string_lossy().into_owned(), cache::Entry { mtime: pf.mtime, size: pf.size, names_fp: use_fp, scan: sc.clone() });
@@ -270,6 +275,8 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
     let mut proj_names: Vec<String> = Vec::new();
     let mut proj_is_old: Vec<bool> = Vec::new();
     let mut proj_dirs_lower: HashSet<String> = HashSet::new();
+    // Folders of files we could not read at all: keep everything in them.
+    for d in &unreadable_dirs { proj_dirs_lower.insert(d.clone()); }
 
     // Index samples by lowercase path first (used for missing-file checks and reference matching).
     let mut entries: Vec<SampleEntry> = sample_files.into_iter().map(|f| SampleEntry { slash: slash(&f.path), size: f.size, mtime: f.mtime, state: UsageState::Unused, by_name: false, gone: false, node: 0 }).collect();
@@ -428,7 +435,7 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
     tm.analysis_ms = t.elapsed().as_millis();
     let root_paths: Vec<String> = s.sample_dirs.iter().map(|p| slash(&p.to_string_lossy()).trim_end_matches('/').to_string()).collect();
     let samples = SampleIndex::build(entries, used_by, proj_names, &root_paths);
-    Analysis { report: Report { plugins: plugin_reports, projects: project_reports, samples: summary, timings: tm, warnings }, samples, stamps }
+    Analysis { report: Report { plugins: plugin_reports, projects: project_reports, samples: summary, timings: tm, warnings, unreadable }, samples, stamps }
 }
 
 /// Yield every parent directory of a lowercase slash path: "a/b/c.wav" -> "a/b", "a".

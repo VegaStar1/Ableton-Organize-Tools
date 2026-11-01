@@ -164,3 +164,5 @@ canvas.mini{width:180px;height:30px;flex:none;cursor:pointer;background:var(--bg
 .dupli{display:grid;grid-template-columns:minmax(0,1fr) 180px 120px;gap:12px}
 .dupli .pill{justify-self:end}
 .dupli .path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.unread{margin:8px 0 0;padding-left:16px;max-height:180px;overflow:auto;font:11px var(--mono);word-break:break-all;color:var(--fg)}
+.warnbox{margin:10px 16px 10px}

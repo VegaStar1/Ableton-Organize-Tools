@@ -74,6 +74,7 @@
     return s;
   }
   const report = () => ({ plugins, projects, samples: summary(), timings: { plugins_ms: 40, projects_ms: 310, samples_ms: 820, analysis_ms: 90, cached_projects: 211, parsed_projects: 3 },
+    unreadable: ['D:\\Samples\\Pack\\Broken Rack.adg: ill-formed document', 'D:\\Projects\\Old\\Old.als: unexpected end of file'],
     warnings: ['Studio One: плагины определяются по названиям внутри проекта, формат неизвестен. Защищаются все форматы, которые эта DAW умеет загружать.'] });
   const listeners = {};
   const wait = ms => new Promise(r => setTimeout(r, ms));

@@ -52,6 +52,16 @@ impl NameMatcher {
 
 fn boundary(b: Option<u8>) -> bool { b.map_or(true, |c| !(c.is_ascii_alphanumeric())) }
 
+/// Plugin names and audio paths found anywhere in a block of bytes.
+pub fn scan_bytes(data: &[u8], matcher: &NameMatcher) -> ProjectScan {
+    let mut names = BTreeSet::new();
+    matcher.find(data, &mut names);
+    ProjectScan {
+        plugins: names.into_iter().map(|name| PluginRef { name, format: None }).collect(),
+        files: extract_audio_paths(data).into_iter().map(|path| FileRefEntry { path, relative: None }).collect(),
+    }
+}
+
 pub fn parse(path: &Path, daw: Daw, matcher: &NameMatcher) -> std::io::Result<ProjectScan> {
     let mut names = BTreeSet::new();
     let mut files = BTreeSet::new();

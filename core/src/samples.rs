@@ -21,7 +21,8 @@ pub fn norm(p: &str) -> String {
 
 /// Ableton presets (racks, clips) stored next to samples. They reference those
 /// samples, so they are read like projects.
-pub const PRESET_EXTS: &[&str] = &["adg", "adv", "alc", "alp"];
+/// (.alp is a Live Pack installer archive, not XML, so it is not read.)
+pub const PRESET_EXTS: &[&str] = &["adg", "adv", "alc"];
 
 #[derive(Default)]
 pub struct ScanOut { pub files: Vec<SampleFile>, pub presets: Vec<SampleFile> }

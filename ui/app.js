@@ -129,7 +129,11 @@ function head(title) {
   return `<div class="head"><h1>${title}</h1><div class="scan"><span>${S.report.projects.length} проектов · ${S.report.plugins.length} плагинов · ${nf(S.report.samples.files, 0)} файлов</span><button class="btn" data-act="rescan">Обновить скан</button></div></div>`;
 }
 function warnings() {
-  return S.report.warnings.length && S.view === 'plugins' ? `<div class="warnbox">${S.report.warnings.map((w) => `<div class="note info">${esc(w)}</div>`).join('')}</div>` : '';
+  const notes = S.report.warnings || [], bad = S.report.unreadable || [];
+  if (!notes.length && !bad.length) return '';
+  return `<div class="warnbox">${notes.map((w) => `<div class="mute" style="font-size:12px">${esc(w)}</div>`).join('')}
+    ${bad.length ? `<div class="note"><div style="display:flex;justify-content:space-between;gap:10px;align-items:center"><span>Не удалось прочитать файлов: ${nf(bad.length, 0)}. Все сэмплы в их папках защищены от удаления.</span><button class="btn sm" data-act="toggleUnread">${S.showUnread ? 'Скрыть' : 'Показать'}</button></div>
+      ${S.showUnread ? `<ul class="unread">${bad.slice(0, 500).map((w) => `<li>${esc(w)}</li>`).join('')}${bad.length > 500 ? `<li>и ещё ${bad.length - 500}</li>` : ''}</ul>` : ''}</div>` : ''}</div>`;
 }
 
 /* --- plugins --- */
@@ -503,6 +507,7 @@ const A = {
     render();
   },
   closeMenu: () => { S.menu = null; render(); },
+  toggleUnread: () => { S.showUnread = !S.showUnread; render(); },
   closeModal: (el, e) => { if (e.target.closest('[data-stop]') && !el.classList.contains('btn')) return; S.modal = null; render(); },
   modalOk: async () => { const fn = S.modal.fn; S.modal = null; render(); await fn(); },
   restore: async (el) => { const id = el.dataset.v; const errs = await invoke('trash_restore', { ids: [id] }); await afterTrashChange(); errs.length ? toast(errs[0]) : toast('Вернул на прежнее место'); },

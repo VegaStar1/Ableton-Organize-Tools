@@ -19,7 +19,7 @@ pub struct ProjectFile {
     pub is_library: bool,
 }
 
-const LIB_EXTS: &[&str] = &["adg", "adv", "alc", "alp"];
+const LIB_EXTS: &[&str] = &["adg", "adv", "alc"];
 
 /// Walk the given folders and collect project files for the chosen DAWs.
 pub fn discover(roots: &[PathBuf], daws: &[Daw], include_backups: bool, library_dirs: &[PathBuf]) -> Vec<ProjectFile> {
@@ -65,10 +65,29 @@ pub fn make(daw: Daw, path: PathBuf, md: Option<std::fs::Metadata>, is_library: 
 /// plugins, used by the heuristic readers.
 pub fn parse(pf: &ProjectFile, matcher: &generic::NameMatcher) -> std::io::Result<ProjectScan> {
     match pf.daw.support() {
-        SupportLevel::Exact => ableton::parse(&pf.path),
+        // Ableton files that are not well-formed XML are read as plain text instead,
+        // so their sample paths still protect the samples.
+        SupportLevel::Exact => {
+            let data = ableton::read_decompressed(&pf.path, 1 << 30)?;
+            // Structured read first; a file that is not valid XML is read as plain text.
+            let mut sc = match ableton::parse_reader(&data[..]) { Ok(sc) => sc, Err(_) => generic::scan_bytes(&data, matcher) };
+            // Belt and braces: any audio path written anywhere in the file also counts,
+            // even if the XML reader skipped it.
+            let mut known: std::collections::HashSet<String> = sc.files.iter().map(|f| f.path.to_lowercase()).collect();
+            for p in generic::extract_audio_paths(&data) {
+                let p = xml_unescape(&p);
+                if known.insert(p.to_lowercase()) { sc.files.push(crate::FileRefEntry { path: p, relative: None }); }
+            }
+            Ok(sc)
+        }
         SupportLevel::Heuristic => generic::parse(&pf.path, pf.daw, matcher),
         SupportLevel::None => Ok(ProjectScan::default()),
     }
+}
+
+fn xml_unescape(s: &str) -> String {
+    if !s.contains('&') { return s.to_string(); }
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
 pub fn project_dir(p: &Path) -> PathBuf { p.parent().map(|x| x.to_path_buf()).unwrap_or_default() }
