@@ -166,3 +166,10 @@ canvas.mini{width:180px;height:30px;flex:none;cursor:pointer;background:var(--bg
 .dupli .path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .unread{margin:8px 0 0;padding-left:16px;max-height:180px;overflow:auto;font:11px var(--mono);word-break:break-all;color:var(--fg)}
 .warnbox{margin:10px 16px 10px}
+.th{all:unset;cursor:pointer;color:inherit;font:inherit;letter-spacing:inherit;text-transform:inherit;display:flex;gap:4px;align-items:center;border-radius:4px}
+.th.num{justify-content:flex-end}
+.th:hover{color:var(--fg)}
+.th.on{color:var(--fg)}
+.th i{font-style:normal;font-size:9px;min-width:8px}
+.th:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.c-tr{grid-template-columns:22px minmax(0,1.5fr) 100px 90px 230px}

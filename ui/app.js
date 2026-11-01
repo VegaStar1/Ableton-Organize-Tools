@@ -56,6 +56,35 @@ function visiblePlugins() {
   }).filter(Boolean);
 }
 const selKey = (kind, key) => kind + '|' + key;
+
+/* ---------- column sorting ---------- */
+const SORT_DEFAULT = { plugins: ['name', 1], projects: ['mtime', -1], samples: ['size', -1], trash: ['date', -1] };
+const SORT_KEYS = {
+  plugins: { name: (p) => p.name, used: (p) => p.used_projects, size: (p) => p.total_size, status: (p) => ({ unused: 0, duplicate: 1, used: 2 })[p.status] },
+  projects: { name: (p) => p.name, daw: (p) => S.dawName[p.daw] || p.daw, mtime: (p) => p.mtime, plugins: (p) => p.plugins.length, files: (p) => p.file_refs, size: (p) => p.size },
+  samples: { name: (k) => k.name, usage: (k) => k.unused_bytes, files: (k) => k.files, size: (k) => k.bytes },
+  trash: { name: (i) => i.label, kind: (i) => i.kind, size: (i) => i.size, date: (i) => i.trashed_at },
+};
+S.sort = (() => { try { return { ...SORT_DEFAULT, ...JSON.parse(localStorage.getItem('debridr.sort') || '{}') }; } catch { return { ...SORT_DEFAULT }; } })();
+const collator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' });
+function sorted(table, list) {
+  const [key, dir] = S.sort[table] || SORT_DEFAULT[table];
+  const get = SORT_KEYS[table][key] || SORT_KEYS[table][SORT_DEFAULT[table][0]];
+  const out = list.slice().sort((a, b) => {
+    const x = get(a), y = get(b);
+    const c = typeof x === 'string' || typeof y === 'string' ? collator.compare(String(x ?? ''), String(y ?? '')) : (x ?? 0) - (y ?? 0);
+    if (c) return c * dir;
+    // ties: alphabetical, so equal values keep a predictable order
+    return collator.compare(String(a.name ?? a.label ?? ''), String(b.name ?? b.label ?? ''));
+  });
+  // folders stay above files, like in Explorer
+  return table === 'samples' ? [...out.filter((k) => k.is_dir), ...out.filter((k) => !k.is_dir)] : out;
+}
+function th(table, key, label, num) {
+  const [k, d] = S.sort[table] || SORT_DEFAULT[table];
+  const on = k === key;
+  return `<button class="th ${num ? 'num' : ''} ${on ? 'on' : ''}" data-act="sort" data-t="${table}" data-k="${key}" title="Сортировать">${label}<i>${on ? (d > 0 ? '▲' : '▼') : ''}</i></button>`;
+}
 const selSize = () => [...S.sel.values()].reduce((a, i) => a + i.size, 0);
 
 /* ---------- boot ---------- */
@@ -141,6 +170,7 @@ function vPlugins() {
   const all = visiblePlugins();
   let list = all.filter((p) => p.name.toLowerCase().includes(S.q.toLowerCase()));
   if (S.filter !== 'all') list = list.filter((p) => p.status === S.filter);
+  list = sorted('plugins', list);
   const unused = all.filter((p) => p.status === 'unused'), dup = all.filter((p) => p.status === 'duplicate');
   const free = all.reduce((a, p) => a + p.recommended_size, 0);
   const seg = [['all', 'Все'], ['unused', 'Не используются'], ['duplicate', 'Лишние форматы'], ['used', 'Используются']];
@@ -152,7 +182,7 @@ function vPlugins() {
     <div class="tools"><input type="search" id="q" placeholder="Поиск плагина" value="${esc(S.q)}" aria-label="Поиск">
       <div class="seg">${seg.map(([k, l]) => `<button data-act="filter" data-v="${k}" aria-pressed="${S.filter === k}">${l}</button>`).join('')}</div>
       <button class="btn" style="margin-left:auto" data-act="selRec">Выбрать всё рекомендованное</button></div>
-    <div class="list"><div class="row hd c-pl"><span></span><span>Плагин</span><span>Форматы · проектов</span><span class="num">Размер</span><span>Статус</span></div>` +
+    <div class="list"><div class="row hd c-pl"><span></span>${th('plugins', 'name', 'Плагин')}${th('plugins', 'used', 'Форматы · проектов')}${th('plugins', 'size', 'Размер', 1)}${th('plugins', 'status', 'Статус')}</div>` +
     (list.map((p) => {
       const st = { used: ['ok', 'Нужен'], duplicate: ['warn', 'Лишние форматы'], unused: ['bad', 'Не используется'] }[p.status];
       const n = p.formats.filter((f) => S.sel.has(selKey('plugin', f.path))).length;
@@ -185,9 +215,9 @@ function sPlugin() {
 
 /* --- projects --- */
 function vProjects() {
-  const ps = S.report.projects;
+  const ps = sorted('projects', S.report.projects);
   return head('Проекты') + `<div class="stats"><div class="stat"><b>${ps.length}</b><span>проектов</span></div><div class="stat"><b>${sz(ps.reduce((a, p) => a + p.size, 0))}</b><span>сами файлы проектов</span></div><div class="stat"><b>${ps.filter((p) => p.missing.length).length}</b><span>с потерянными файлами</span></div></div>
-  <div class="list"><div class="row hd c-pr"><span>Проект</span><span>DAW</span><span>Изменён</span><span class="num">Плагинов</span><span class="num">Файлов</span><span class="num">Размер</span></div>` +
+  <div class="list"><div class="row hd c-pr">${th('projects', 'name', 'Проект')}${th('projects', 'daw', 'DAW')}${th('projects', 'mtime', 'Изменён')}${th('projects', 'plugins', 'Плагинов', 1)}${th('projects', 'files', 'Файлов', 1)}${th('projects', 'size', 'Размер', 1)}</div>` +
     (ps.map((p) => `<div class="row c-pr" tabindex="0" data-act="selPr" data-v="${p.id}" data-ctx="path" data-path="${esc(p.path)}" aria-selected="${S.selPr === p.id}">
       <div class="name"><b>${esc(p.name)}</b>${p.missing.length ? `<small style="color:var(--bad)">не найдено файлов: ${p.missing.length}</small>` : ''}</div>
       <span class="mute">${esc(S.dawName[p.daw] || p.daw)}</span><span class="mute">${dt(p.mtime)}</span><span class="num mono">${p.plugins.length}</span><span class="num mono">${p.file_refs}</span><span class="num mono">${sz(p.size)}</span></div>`).join('') || '<div class="empty">Проекты не найдены. Проверьте папки в настройках.</div>') + '</div>';
@@ -213,12 +243,13 @@ function vSamples() {
   const s = S.report.samples;
   let kids = S.kids;
   if (S.onlyUnused) kids = kids.filter((k) => (k.is_dir ? k.unused_bytes > 0 : k.state === 'unused'));
+  kids = sorted('samples', kids);
   const here = S.kids.reduce((a, k) => a + k.unused_bytes + (k.state === 'unused' && !k.is_dir ? k.bytes : 0), 0);
   return head('Сэмплы') + `<div class="stats"><div class="stat"><b>${sz(s.bytes)}</b><span>${nf(s.files, 0)} файлов</span></div><div class="stat"><b>${sz(s.used_bytes)}</b><span>нужны проектам</span></div><div class="stat"><b>${sz(s.old_bytes)}</b><span>только в старых проектах</span></div><div class="stat"><b>${sz(s.unused_bytes)}</b><span>нигде не используются</span></div></div>
   ${crumbs()}<div class="tools"><button class="btn ${S.onlyUnused ? 'pri' : ''}" data-act="onlyUnused">Только неиспользуемое</button>
     <label class="mute" style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-act="allowOld" ${S.allowOld ? 'checked' : ''}> Разрешить файлы из старых проектов</label>
     <button class="btn" style="margin-left:auto" data-act="selUnusedHere" ${here ? '' : 'disabled'}>Выбрать неиспользуемое здесь (${sz(here)})</button></div>
-  <div class="list"><div class="row hd c-sa"><span></span><span>Имя</span><span>Используется / нет</span><span class="num">Файлов</span><span class="num">Размер</span></div>` +
+  <div class="list"><div class="row hd c-sa"><span></span>${th('samples', 'name', 'Имя')}${th('samples', 'usage', 'Используется / нет')}${th('samples', 'files', 'Файлов', 1)}${th('samples', 'size', 'Размер', 1)}</div>` +
     (kids.map((k) => {
       const checkable = !k.is_dir && (k.state === 'unused' || (k.state === 'oldonly' && S.allowOld));
       const on = !k.is_dir && S.sel.has(selKey('sample', k.idx));
@@ -322,13 +353,13 @@ function sDups() {
 
 /* --- trash --- */
 function vTrash() {
-  const t = S.trash, total = t.reduce((a, i) => a + i.size, 0);
+  const t = sorted('trash', S.trash), total = t.reduce((a, i) => a + i.size, 0);
   return head('Корзина') + `<div class="stats"><div class="stat"><b>${t.length}</b><span>элементов</span></div><div class="stat"><b>${sz(total)}</b><span>занимает место, пока не очистите</span></div></div>
   <div class="tools"><span class="mute">Здесь лежит то, что вы убрали. Диск освободится, когда вы очистите корзину.</span>
     <button class="btn danger" style="margin-left:auto" data-act="emptyTrash" ${t.length ? '' : 'disabled'}>Очистить корзину</button></div>
-  <div class="list"><div class="row hd c-tr"><span></span><span>Что</span><span>Тип</span><span class="num">Размер</span><span></span></div>` +
+  <div class="list"><div class="row hd c-tr"><span></span>${th('trash', 'name', 'Что')}${th('trash', 'kind', 'Тип')}${th('trash', 'size', 'Размер', 1)}${th('trash', 'date', 'Убрано', 1)}</div>` +
     (t.map((i) => `<div class="row c-tr" style="cursor:default" data-ctx="trash" data-id="${i.id}" data-path="${esc(i.original_path)}"><span></span><div class="name"><b>${esc(i.label)}</b><small>${esc(i.original_path)}</small></div><span class="mute">${i.kind === 'plugin' ? 'Плагин' : 'Сэмпл'}</span><span class="num mono">${sz(i.size)}</span>
-      <span style="display:flex;gap:6px;justify-content:flex-end"><button class="btn sm" data-act="restore" data-v="${i.id}">Вернуть</button><button class="btn sm danger" data-act="purgeOne" data-v="${i.id}">Удалить</button></span></div>`).join('') || '<div class="empty">Корзина пуста</div>') + '</div>';
+      <span style="display:flex;gap:6px;justify-content:flex-end;align-items:center"><span class="mute" style="font-size:11.5px">${dt(i.trashed_at)}</span><button class="btn sm" data-act="restore" data-v="${i.id}">Вернуть</button><button class="btn sm danger" data-act="purgeOne" data-v="${i.id}">Удалить</button></span></div>`).join('') || '<div class="empty">Корзина пуста</div>') + '</div>';
 }
 function sTrash() {
   return `<section><h2>Как работает корзина</h2></section><section>
@@ -507,6 +538,13 @@ const A = {
     render();
   },
   closeMenu: () => { S.menu = null; render(); },
+  sort: (el) => {
+    const t = el.dataset.t, k = el.dataset.k, [ck, cd] = S.sort[t] || SORT_DEFAULT[t];
+    const textCol = ['name', 'daw', 'kind', 'status'].includes(k);
+    S.sort[t] = [k, ck === k ? -cd : (textCol ? 1 : -1)];
+    try { localStorage.setItem('debridr.sort', JSON.stringify(S.sort)); } catch {}
+    render();
+  },
   toggleUnread: () => { S.showUnread = !S.showUnread; render(); },
   closeModal: (el, e) => { if (e.target.closest('[data-stop]') && !el.classList.contains('btn')) return; S.modal = null; render(); },
   modalOk: async () => { const fn = S.modal.fn; S.modal = null; render(); await fn(); },
