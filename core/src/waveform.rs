@@ -51,6 +51,7 @@ pub fn compute(path: &Path, buckets: usize) -> Result<Wave> {
         let decoded = match decoder.decode(&packet) { Ok(d) => d, Err(symphonia::core::errors::Error::DecodeError(_)) => continue, Err(_) => break };
         let spec = *decoded.spec();
         let ch = spec.channels.count().max(1);
+        if decoded.capacity() > 1 << 22 { return Err(Error::Msg("слишком большой блок в файле".into())); }
         if buf.as_ref().map_or(true, |b| b.capacity() < decoded.capacity() * ch) {
             buf = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
         }
@@ -62,6 +63,8 @@ pub fn compute(path: &Path, buckets: usize) -> Result<Wave> {
             if n == BLOCK { blocks.push((lo, hi)); lo = f32::MAX; hi = f32::MIN; n = 0; }
         }
         frames += (b.samples().len() / ch) as u64;
+        // Overview of the first 3 hours is enough; stops runaway work on odd files.
+        if frames > sample_rate as u64 * 3 * 3600 { break; }
     }
     if n > 0 { blocks.push((lo, hi)); }
     if blocks.is_empty() { return Err(Error::Msg("не удалось прочитать звук".into())); }

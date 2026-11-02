@@ -326,6 +326,27 @@ async fn run_uninstaller(app: AppHandle, id: String) -> R<()> {
 
 // ---------- waveform ----------
 
+static WAVE_BUSY: (Mutex<usize>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
+const WAVE_MAX: usize = 2;
+struct WaveSlot;
+impl WaveSlot {
+    fn acquire() -> Self {
+        let (m, cv) = &WAVE_BUSY;
+        let mut n = m.lock().unwrap_or_else(|e| e.into_inner());
+        while *n >= WAVE_MAX { n = cv.wait(n).unwrap_or_else(|e| e.into_inner()); }
+        *n += 1;
+        WaveSlot
+    }
+}
+impl Drop for WaveSlot {
+    fn drop(&mut self) {
+        let (m, cv) = &WAVE_BUSY;
+        let mut n = m.lock().unwrap_or_else(|e| e.into_inner());
+        *n -= 1;
+        cv.notify_one();
+    }
+}
+
 /// Waveform overview of an audio file. Results are kept in memory for the session.
 #[tauri::command]
 async fn wave(app: AppHandle, path: String, buckets: usize) -> R<Wave> {
@@ -334,7 +355,12 @@ async fn wave(app: AppHandle, path: String, buckets: usize) -> R<Wave> {
         let key = format!("{buckets}|{path}");
         if let Some(w) = st.waves.lock().map_err(err)?.get(&key) { return Ok(w.clone()); }
         let fs_path = if cfg!(windows) { PathBuf::from(path.replace('/', "\\")) } else { PathBuf::from(&path) };
-        let w = waveform::compute(&fs_path, buckets).map_err(err)?;
+        // At most two decodes at once (each can hold a large file's buffers), on a
+        // thread with a big stack: some codecs need more than the default.
+        let _slot = WaveSlot::acquire();
+        let w = std::thread::Builder::new().stack_size(32 << 20).spawn(move || {
+            std::panic::catch_unwind(|| waveform::compute(&fs_path, buckets)).unwrap_or_else(|_| Err(organizer_core::Error::Msg("файл не удалось разобрать".into())))
+        }).map_err(err)?.join().map_err(|_| "файл не удалось разобрать".to_string())?.map_err(err)?;
         let mut cache = st.waves.lock().map_err(err)?;
         if cache.len() > 400 { cache.clear(); }
         cache.insert(key, w.clone());

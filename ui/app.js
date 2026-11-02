@@ -329,15 +329,44 @@ function drawWave(c, w, progress) {
   if (progress != null && progress > 0) { g.fillStyle = cssVar('--fg'); g.fillRect(Math.round(progress * W), 0, 1.5, H); }
 }
 function progressOf(path) { const a = $('#audio'); return S.playing === path && a && a.duration ? a.currentTime / a.duration : null; }
+/* Waves are requested only for canvases on screen, at most two at a time,
+   newest first (the player dock jumps the queue). */
+const waveQueue = [];
+let waveInflight = 0;
+function pumpWaves() {
+  while (waveInflight < 2 && waveQueue.length) {
+    const job = waveQueue.shift();
+    if (S.waves[job.key] || S.wavePending[job.key]) continue;
+    if (!job.dock && !document.querySelector(`canvas[data-wave="${CSS.escape(job.path)}"][data-b="${job.b}"]`)) continue; // scrolled away / view changed
+    S.wavePending[job.key] = true; waveInflight++;
+    invoke('wave', { path: job.path, buckets: job.b }).then((res) => { S.waves[job.key] = res; }, (e) => { S.waves[job.key] = { error: String(e).slice(0, 80) }; })
+      .finally(() => {
+        delete S.wavePending[job.key]; waveInflight--;
+        document.querySelectorAll('canvas[data-wave]').forEach((cc) => { if (cc.dataset.wave === job.path && +cc.dataset.b === job.b) drawWave(cc, S.waves[job.key], progressOf(job.path)); });
+        const m = $('#ptime'); if (m && S.dock === job.path) m.textContent = waveMeta(job.path);
+        pumpWaves();
+      });
+  }
+}
+function requestWave(path, b, dock) {
+  const key = b + '|' + path;
+  if (S.waves[key] || S.wavePending[key] || waveQueue.some((j) => j.key === key)) return;
+  const job = { path, b, key, dock };
+  dock ? waveQueue.unshift(job) : waveQueue.push(job);
+  if (waveQueue.length > 200) waveQueue.length = 200;
+  pumpWaves();
+}
+const waveObserver = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
+  entries.forEach((en) => { if (en.isIntersecting) { const c = en.target; requestWave(c.dataset.wave, +c.dataset.b, false); waveObserver.unobserve(c); } });
+}) : null;
 function paintWaves() {
   document.querySelectorAll('canvas[data-wave]').forEach((c) => {
     const path = c.dataset.wave, b = +c.dataset.b, key = b + '|' + path;
     const w = S.waves[key];
     drawWave(c, w, progressOf(path) ?? (c.dataset.dock ? 0 : null));
     if (w || S.wavePending[key]) return;
-    S.wavePending[key] = true;
-    invoke('wave', { path, buckets: b }).then((res) => { S.waves[key] = res; }, (e) => { S.waves[key] = { error: String(e).slice(0, 80) }; })
-      .finally(() => { delete S.wavePending[key]; document.querySelectorAll(`canvas[data-wave]`).forEach((cc) => { if (cc.dataset.wave === path && +cc.dataset.b === b) drawWave(cc, S.waves[key], progressOf(path)); }); const m = $('#ptime'); if (m && S.dock === path) m.textContent = waveMeta(path); });
+    if (c.dataset.dock || !waveObserver) requestWave(path, b, !!c.dataset.dock);
+    else waveObserver.observe(c);
   });
 }
 function sSample() {
@@ -364,10 +393,10 @@ function vDups() {
   return head('Дубликаты') + `<div class="tools">${S.dupBusy ? '<button class="btn danger" data-act="cancelDups">Остановить</button>' : '<button class="btn pri" data-act="findDups">Найти дубликаты сэмплов</button>'}<span class="mute">Ищутся точные копии файлов от 1 МБ. Содержимое читается только у файлов одинакового размера.</span></div>
     ${S.dupBusy ? `<div style="padding:12px 16px;border-bottom:1px solid var(--line)"><div class="prog" style="margin:0 0 6px"><i id="dbar" style="width:${dupPct()}%"></i></div><div class="mute" id="dtext">${esc(dupText())}</div></div>` : ''}` +
     (d ? `<div class="stats"><div class="stat"><b>${d.length}</b><span>групп копий</span></div><div class="stat"><b>${sz(reclaim)}</b><span>можно освободить</span></div></div>` : '') +
-    `<div class="list">${d ? (d.map(([g, files], gi) => `<div style="padding:10px 16px;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between;margin-bottom:6px"><b>${esc(files[0].name)} <span class="mute">× ${files.length}</span></b><span class="mono mute">${sz(g.size)} каждая</span></div>
+    `<div class="list">${d ? (d.slice(0, S.dupShown || 60).map(([g, files], gi) => `<div style="padding:10px 16px;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between;margin-bottom:6px"><b>${esc(files[0].name)} <span class="mute">× ${files.length}</span></b><span class="mono mute">${sz(g.size)} каждая</span></div>
       ${files.map((f) => { const on = S.sel.has(selKey('sample', f.idx)); const ok = f.state === 'unused'; const st = STATE[f.state];
         return `<div class="li dupli" data-ctx="sample" data-path="${esc(f.path)}" data-idx="${f.idx}" data-name="${esc(f.name)}" data-size="${f.size}" data-state="${f.state}"><span style="display:flex;gap:8px;align-items:center;min-width:0"><input type="checkbox" data-act="togS" data-idx="${f.idx}" data-label="${esc(f.name)}" data-size="${f.size}" ${on ? 'checked' : ''} ${ok ? '' : 'disabled'}><button class="play ${S.playing === f.path ? 'on' : ''}" data-act="play" data-path="${esc(f.path)}" data-name="${esc(f.name)}" aria-label="Прослушать">${S.playing === f.path ? '❚❚' : '▶'}</button><span class="path" style="margin:0">${esc(f.path)}</span></span><canvas class="mini" data-wave="${esc(f.path)}" data-b="300" data-act="play" data-path="${esc(f.path)}"></canvas><span class="pill ${st[0]}">${st[1]}</span></div>`; }).join('')}
-      <button class="btn sm" style="margin-top:6px" data-act="selDupGroup" data-v="${gi}">Выбрать лишние копии</button></div>`).join('') || '<div class="empty">Точных копий не найдено</div>') : `<div class="empty">${S.dupBusy ? 'Идёт поиск. Можно переключаться на другие разделы.' : 'Нажмите «Найти дубликаты сэмплов»'}</div>`}</div>`;
+      <button class="btn sm" style="margin-top:6px" data-act="selDupGroup" data-v="${gi}">Выбрать лишние копии</button></div>`).join('') + (d.length > (S.dupShown || 60) ? `<div class="empty" style="padding:14px"><button class="btn" data-act="moreDups">Показать ещё (${d.length - (S.dupShown || 60)} групп)</button></div>` : '') || '<div class="empty">Точных копий не найдено</div>') : `<div class="empty">${S.dupBusy ? 'Идёт поиск. Можно переключаться на другие разделы.' : 'Нажмите «Найти дубликаты сэмплов»'}</div>`}</div>`;
 }
 function dupPct() {
   const p = S.dupProg; if (!p) return 2;
@@ -556,6 +585,7 @@ const A = {
   runUninst: async (el) => { S.modal = null; render(); try { await invoke('run_uninstaller', { id: el.dataset.v }); toast('Деинсталлятор запущен. После удаления обновите скан.'); } catch (e) { toast(String(e)); } },
   menuPick: (el) => { const it = S.menu.items[+el.dataset.i]; S.menu = null; render(); Promise.resolve(it.fn()).catch((e) => toast(String(e))); },
   cancelDups: () => invoke('cancel_duplicates'),
+  moreDups: () => { S.dupShown = (S.dupShown || 60) + 60; render(); },
   setStrict: (el) => { S.settings.strict_names = el.checked; },
   clearCache: () => {
     S.modal = { title: 'Очистить кэш?', ok: 'Очистить', danger: false, body: `<p>Будет удалено ${sz(S.cache.bytes)}: кэш разобранных проектов и журнал ошибок. Настройки, папки и корзина останутся. Следующий скан прочитает проекты заново и займёт больше времени.</p>`,
@@ -583,7 +613,7 @@ const A = {
   },
   findDups: async () => {
     S.dupBusy = true; S.dupProg = null; render();
-    try { const r = await invoke('find_duplicates', { minSize: 1048576 }); if (r) S.dups = r; else toast('Поиск остановлен'); }
+    try { const r = await invoke('find_duplicates', { minSize: 1048576 }); if (r) { S.dups = r; S.dupShown = 60; } else toast('Поиск остановлен'); }
     finally { S.dupBusy = false; render(); }
   },
   selDupGroup: (el) => {
