@@ -155,6 +155,9 @@ struct TrashRequest {
     label: String,
     #[serde(default)]
     allow_old: bool,
+    /// The user confirmed removing something projects still use.
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Serialize)]
@@ -188,12 +191,12 @@ async fn trash_move(app: AppHandle, items: Vec<TrashRequest>) -> R<TrashResult> 
             let target: Result<(PathBuf, u64), String> = if r.kind == "plugin" {
                 an.report.plugins.iter().flat_map(|p| p.formats.iter()).find(|f| f.path == r.key)
                     .ok_or_else(|| format!("{}: плагин не найден в результатах скана", r.label))
-                    .and_then(|f| if f.removable { Ok((PathBuf::from(&f.path), f.size)) } else { Err(format!("{}: нужен проектам, удалять нельзя", r.label)) })
+                    .and_then(|f| if f.removable || r.force { Ok((PathBuf::from(&f.path), f.size)) } else { Err(format!("{}: нужен проектам. Подтвердите удаление нужного в окне подтверждения", r.label)) })
             } else {
                 r.key.parse::<u32>().ok().and_then(|i| an.samples.entries.get(i as usize).map(|e| (i, e)))
                     .ok_or_else(|| format!("{}: файл не найден в результатах скана", r.label))
                     .and_then(|(i, e)| {
-                        let allowed = matches!(e.state, UsageState::Unused) || (r.allow_old && matches!(e.state, UsageState::OldOnly));
+                        let allowed = r.force || matches!(e.state, UsageState::Unused) || (r.allow_old && matches!(e.state, UsageState::OldOnly));
                         if !allowed { return Err(format!("{}: используется или принадлежит проекту", r.label)); }
                         // 2. the file itself must not have changed since the scan
                         let p = an.samples.fs_path(i);
@@ -265,8 +268,37 @@ async fn reveal_path(path: String) -> R<()> {
 }
 
 #[tauri::command]
-async fn web_search(query: String) -> R<()> {
-    blocking(move || system::web_search(&query).map_err(err)).await
+async fn web_search(query: String, images: Option<bool>) -> R<()> {
+    blocking(move || system::web_search(&query, images.unwrap_or(true)).map_err(err)).await
+}
+
+#[tauri::command]
+async fn show_properties(path: String) -> R<()> {
+    blocking(move || system::show_properties(Path::new(&path)).map_err(err)).await
+}
+
+#[derive(Serialize)]
+struct PluginInfo { formats: Vec<organizer_core::details::PluginDetails>, vendor: Option<String>, publisher_from: Option<String> }
+
+/// Vendor, version, effect type and dates for each format of a plugin.
+#[tauri::command]
+async fn plugin_details(app: AppHandle, name: String, paths: Vec<String>) -> R<PluginInfo> {
+    blocking(move || {
+        let formats: Vec<_> = paths.iter().map(|p| organizer_core::details::read(Path::new(p), &name)).collect();
+        let mut vendor = formats.iter().find_map(|f| f.vendor.clone());
+        let mut publisher_from = None;
+        if vendor.is_none() {
+            // fall back to the publisher of the matching Windows uninstaller
+            let st = app.state::<AppState>();
+            let mut cache = st.uninstallers.lock().map_err(err)?;
+            if cache.is_none() { *cache = Some(system::list_uninstallers()); }
+            if let Some(u) = system::match_uninstallers(&name, &paths, cache.as_ref().unwrap()).into_iter().find(|u| !u.publisher.is_empty()) {
+                vendor = Some(u.publisher.clone());
+                publisher_from = Some(u.name.clone());
+            }
+        }
+        Ok(PluginInfo { formats, vendor, publisher_from })
+    }).await
 }
 
 #[tauri::command]
@@ -373,7 +405,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             boot, save_settings, run_scan, sample_children, sample_top, sample_info, sample_summary,
             find_duplicates, cancel_duplicates, trash_move, trash_list, trash_restore, trash_purge, trash_empty,
-            reveal_path, web_search, plugin_uninstallers, run_uninstaller, cache_info, clear_cache, wave
+            reveal_path, web_search, show_properties, plugin_details, plugin_uninstallers, run_uninstaller, cache_info, clear_cache, wave
         ])
         .run(tauri::generate_context!())
         .expect("error while running Debridr");

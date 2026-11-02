@@ -10,7 +10,7 @@
     fam('Serum', { vst3: [112, ['Night Drive v7', 'Beat 042']], vst2: [118, ['Old Idea 2021', 'Sketch 2024-03']] }),
     fam('Valhalla VintageVerb', { vst3: [9, ['Night Drive v7', 'Vocal Demo', 'Album Intro']], vst2: [10, []], aax: [9, []] }),
     fam('Kontakt 7', { vst3: [520, ['Album Intro', 'Remix Alina']], aax: [515, []] }),
-    fam('Kickstart 2', { vst3: [14, ['Night Drive v7', 'Beat 042', 'Remix Alina']], vst2: [15, []] }),
+    fam('Kickstart 2', { vst3: [14, ['Night Drive v7', 'Beat 042', 'Remix Alina', 'Album Intro', 'Vocal Demo', 'Sketch 2024-03', 'Old Idea 2021']], vst2: [15, []] }),
     fam('Sylenth1', { vst2: [12, ['Old Idea 2021']], vst3: [12, []] }),
     fam('Soundtoys Decapitator', { vst3: [61, ['Beat 042', 'Vocal Demo']], aax: [60, []] }),
     fam('Auto-Tune Pro', { vst3: [180, ['Vocal Demo']], aax: [176, []] }),
@@ -97,6 +97,9 @@
     },
     trash_list: async () => state.trash,
     cancel_duplicates: async () => {},
+    show_properties: async () => {},
+    plugin_details: async ({ name, paths }) => { await wait(120); return { vendor: name.startsWith('FabFilter') ? 'FabFilter' : name === 'Serum' ? 'Xfer Records' : null, publisher_from: null,
+      formats: paths.map((p, i) => ({ path: p, vendor: null, version: i ? null : '3.21', description: null, categories: name.includes('Pro-Q') ? ['Fx|EQ'] : [], kind: name.includes('Pro-Q') ? 'Эквалайзер' : name.includes('Verb') ? 'Реверб' : null, kind_source: name.includes('Verb') ? 'name' : 'plugin', created: 1672531200 + i * 86400 * 40, modified: 1700000000 })) }; },
     wave: async ({ path, buckets }) => {
       await wait(150);
       let h = 0; for (const c of path) h = (h * 31 + c.charCodeAt(0)) >>> 0;

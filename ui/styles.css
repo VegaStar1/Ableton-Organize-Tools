@@ -173,3 +173,22 @@ canvas.mini{width:180px;height:30px;flex:none;cursor:pointer;background:var(--bg
 .th i{font-style:normal;font-size:9px;min-width:8px}
 .th:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .c-tr{grid-template-columns:22px minmax(0,1.5fr) 100px 90px 230px}
+
+/* round selection checkboxes, plugin facts */
+input.round{appearance:none;-webkit-appearance:none;width:17px;height:17px;border-radius:50%;border:1.5px solid var(--mute);display:inline-grid;place-items:center;cursor:pointer;background:transparent;margin:0}
+input.round:hover{border-color:var(--accent)}
+input.round:checked{border-color:var(--accent);background:var(--accent)}
+input.round:checked::after{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent-ink)}
+input.round:indeterminate{border-color:var(--accent)}
+input.round:indeterminate::after{content:"";width:7px;height:2px;background:var(--accent)}
+.chip.picked{outline:1.5px solid var(--accent);outline-offset:1px}
+.fmt.picked{border-color:var(--accent)}
+.fmt .pick{cursor:pointer}
+.facts{display:grid;grid-template-columns:110px 1fr;gap:4px 10px;margin:10px 0 0;font-size:12.5px}
+.facts dt{color:var(--mute)}
+.facts dd{margin:0;min-width:0;word-break:break-word}
+.linkb{all:unset;cursor:pointer;color:var(--accent);font-size:12px;margin-bottom:6px}
+.linkb:hover{text-decoration:underline}
+.mh{margin:12px 0 4px;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:var(--mute)}
+.ml{padding-left:18px;margin:4px 0 0}
+.btn[disabled]{opacity:.45;cursor:not-allowed}

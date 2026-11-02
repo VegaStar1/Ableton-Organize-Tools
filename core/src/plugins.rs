@@ -57,8 +57,11 @@ pub fn scan_dirs(dirs: &[PathBuf]) -> Vec<InstalledPlugin> {
     for d in dirs {
         walk(d, 0, &mut out);
     }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
-    out.dedup_by(|a, b| a.path == b.path);
+    // The same folder can be reached twice (default list + user folder, different
+    // case or slashes): keep one entry per real file.
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    out.sort_by(|a, b| norm(&a.path).cmp(&norm(&b.path)));
+    out.dedup_by(|a, b| norm(&a.path) == norm(&b.path));
     out
 }
 

@@ -5,6 +5,7 @@
 pub mod analysis;
 pub mod cache;
 pub mod daw;
+pub mod details;
 pub mod duplicates;
 pub mod model;
 pub mod plugins;

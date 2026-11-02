@@ -31,11 +31,35 @@ pub fn reveal(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Open an image search for a plugin in the default browser.
-pub fn web_search(query: &str) -> Result<()> {
+/// Open a search in the default browser: `images` for pictures, otherwise a
+/// normal web search (used for descriptions).
+pub fn web_search(query: &str, images: bool) -> Result<()> {
     let q: String = percent_encoding::utf8_percent_encode(query, percent_encoding::NON_ALPHANUMERIC).to_string();
-    let url = format!("https://www.google.com/search?tbm=isch&q={q}");
+    let url = if images { format!("https://www.google.com/search?tbm=isch&q={q}") } else { format!("https://www.google.com/search?q={q}") };
     open_url(&url)
+}
+
+/// Open the system "Properties" window for a file or folder.
+pub fn show_properties(path: &Path) -> Result<()> {
+    if !path.exists() { return Err(Error::Msg("Файл не найден".into())); }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::{SHObjectProperties, SHOP_FILEPATH};
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        // The sheet runs on its own thread inside our process.
+        let ok = unsafe { SHObjectProperties(std::ptr::null_mut(), SHOP_FILEPATH as u32, wide.as_ptr(), std::ptr::null()) };
+        if ok == 0 { return Err(Error::Msg("Windows не открыл свойства".into())); }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!("tell application \"Finder\" to open information window of (POSIX file \"{}\" as alias)", path.display());
+        Command::new("osascript").args(["-e", &script]).spawn()?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    { reveal(path) }
 }
 
 fn open_url(url: &str) -> Result<()> {

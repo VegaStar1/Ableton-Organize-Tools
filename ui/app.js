@@ -25,7 +25,7 @@ const S = {
   dir: null, kids: [], file: null, allowOld: false, onlyUnused: false,
   sel: new Map(), trash: [], dups: null, modal: null, dawName: {},
   hidden: 0, hist: [null], hpos: 0, loading: false, dupProg: null, menu: null, playing: null, cache: null,
-  dock: null, waves: {}, wavePending: {},
+  dock: null, waves: {}, wavePending: {}, details: {}, expand: {}, last: {}, ack: false,
 };
 const toSrc = (path) => {
   const native = S.boot && S.boot.platform === 'windows' ? path.replace(/\//g, '\\') : path;
@@ -145,6 +145,7 @@ function render() {
   root.innerHTML = `<div class="app ${S.dock ? 'has-dock' : ''}">${nav()}<main class="card main">${main()}${actionBar()}</main><aside class="card side">${side()}</aside>${dock()}</div>${S.menu ? menu() : ''}${S.modal ? modal() : ''}`;
   const l = $('.list'); if (l) l.scrollTop = keepScroll;
   paintWaves();
+  document.querySelectorAll('input.part').forEach((c) => { c.indeterminate = true; });
 }
 
 function nav() {
@@ -171,6 +172,7 @@ function vPlugins() {
   let list = all.filter((p) => p.name.toLowerCase().includes(S.q.toLowerCase()));
   if (S.filter !== 'all') list = list.filter((p) => p.status === S.filter);
   list = sorted('plugins', list);
+  S.rows = S.rows || {}; S.rows.plugins = list;
   const unused = all.filter((p) => p.status === 'unused'), dup = all.filter((p) => p.status === 'duplicate');
   const free = all.reduce((a, p) => a + p.recommended_size, 0);
   const seg = [['all', 'Все'], ['unused', 'Не используются'], ['duplicate', 'Лишние форматы'], ['used', 'Используются']];
@@ -186,31 +188,61 @@ function vPlugins() {
     (list.map((p) => {
       const st = { used: ['ok', 'Нужен'], duplicate: ['warn', 'Лишние форматы'], unused: ['bad', 'Не используется'] }[p.status];
       const n = p.formats.filter((f) => S.sel.has(selKey('plugin', f.path))).length;
+      const ri = list.indexOf(p);
       return `<div class="row c-pl" tabindex="0" data-act="selP" data-v="${esc(p.name)}" data-ctx="plugin" aria-selected="${S.selP === p.name}" ${p.image ? `data-img="${esc(toSrc(p.image))}"` : ''}>
-        <span>${n ? `<span class="badge">${n}</span>` : ''}</span>
+        <span><input type="checkbox" class="round ${n && n < p.formats.length ? 'part' : ''}" data-act="rowPlug" data-i="${ri}" ${n === p.formats.length ? 'checked' : ''} aria-label="Выбрать ${esc(p.name)}" title="Выбрать все форматы. Shift — выбрать диапазон"></span>
         <div class="name"><b>${esc(p.name)}</b>${p.image ? '<small>есть картинка</small>' : ''}</div>
-        <div class="chips">${p.formats.map((f) => `<span class="chip ${f.used_by.length ? 'on' : ''}">${FMT[f.format]} · ${f.used_by.length}</span>`).join('')}</div>
+        <div class="chips">${p.formats.map((f) => `<span class="chip ${f.used_by.length ? 'on' : ''} ${S.sel.has(selKey('plugin', f.path)) ? 'picked' : ''}">${esc(fmtLabel(p, f))} · ${f.used_by.length}</span>`).join('')}</div>
         <div class="num mono">${sz(p.total_size)}</div><div><span class="pill ${st[0]}">${st[1]}</span></div></div>`;
     }).join('') || '<div class="empty">Ничего не найдено</div>') + '</div>';
+}
+function loadDetails(p) {
+  if (!p || S.details[p.name]) return;
+  S.details[p.name] = 'loading';
+  invoke('plugin_details', { name: p.name, paths: p.formats.map((f) => f.path) })
+    .then((d) => { S.details[p.name] = d; }, () => { S.details[p.name] = { formats: [], vendor: null }; })
+    .finally(() => { if (S.view === 'plugins' && S.selP === p.name) render(); });
+}
+function usedList(f) {
+  if (!f.used_by.length) return '';
+  const all = S.expand[f.path], show = all ? f.used_by : f.used_by.slice(0, 5);
+  return `<div class="mute" style="font-size:12px">Нужен в проектах (${f.used_by.length}):</div><ul>${show.map((u) => `<li>${esc(u.project)} <span class="mute">· ${esc(S.dawName[u.daw] || u.daw)}${u.exact ? '' : ', по названию'}</span></li>`).join('')}</ul>
+    ${f.used_by.length > 5 ? `<button class="linkb" data-act="expandUsed" data-path="${esc(f.path)}">${all ? 'Свернуть' : `+ Показать все ${f.used_by.length}`}</button>` : ''}`;
 }
 function sPlugin() {
   const p = visiblePlugins().find((x) => x.name === S.selP);
   if (!p) return '<section class="empty">Выберите плагин слева</section>';
+  loadDetails(p);
+  const d = S.details[p.name], ready = d && d !== 'loading';
+  const det = (path) => (ready ? d.formats.find((x) => x.path === path) : null) || {};
+  const first = ready ? d.formats.find((x) => x.kind) || {} : {};
+  const version = ready ? (d.formats.find((x) => x.version) || {}).version : null;
+  const descr = ready ? (d.formats.find((x) => x.description) || {}).description : null;
   const rec = p.recommended;
-  return `${p.image ? `<img class="shot" src="${esc(toSrc(p.image))}" alt="${esc(p.name)}">` : ''}<section><h2>${esc(p.name)}</h2><div class="mute">Используется в проектах: ${p.used_projects}</div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px"><button class="btn sm" data-act="uninstallMenu" data-v="${esc(p.name)}">Деинсталлировать…</button><button class="btn sm" data-act="webSearch" data-v="${esc(p.name)}">${p.image ? 'Найти в интернете' : 'Как выглядит? Найти в интернете'}</button></div></section>
+  return `${p.image ? `<img class="shot" src="${esc(toSrc(p.image))}" alt="${esc(p.name)}">` : ''}<section><h2>${esc(p.name)}</h2>
+    <dl class="facts">
+      <dt>Производитель</dt><dd>${!ready ? '<span class="mute">читаю…</span>' : d.vendor ? esc(d.vendor) + (d.publisher_from ? ' <span class="mute">(из «Приложений» Windows)</span>' : '') : '<span class="mute">не указан</span>'}</dd>
+      <dt>Тип</dt><dd>${!ready ? '…' : first.kind ? esc(first.kind) + (first.kind_source === 'name' ? ' <span class="mute">(угадано по названию)</span>' : '') : '<span class="mute">неизвестно</span>'}</dd>
+      ${version ? `<dt>Версия</dt><dd class="mono">${esc(version)}</dd>` : ''}
+      ${descr ? `<dt>Описание</dt><dd>${esc(descr)}</dd>` : ''}
+      <dt>В проектах</dt><dd>${p.used_projects}</dd>
+    </dl>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px"><button class="btn sm" data-act="describe" data-v="${esc(p.name)}">Описание в интернете</button><button class="btn sm" data-act="webSearch" data-v="${esc(p.name)}">Картинки</button><button class="btn sm danger" data-act="uninstallMenu" data-v="${esc(p.name)}">Деинсталлировать…</button></div></section>
   <section><h3>Форматы на диске</h3>${p.formats.map((f) => {
-    const k = selKey('plugin', f.path), on = S.sel.has(k);
-    return `<div class="fmt" data-ctx="path" data-path="${esc(f.path)}"><div class="top"><b>${FMT[f.format]}</b><span class="mono mute">${sz(f.size)}</span></div>
-      <div class="path">${esc(f.path)}</div><button class="btn sm" data-act="reveal" data-path="${esc(f.path)}" style="margin-bottom:6px">Показать в проводнике</button>
-      ${f.used_by.length ? `<div class="mute" style="font-size:12px">Нужен в проектах (${f.used_by.length}):</div><ul>${f.used_by.slice(0, 8).map((u) => `<li>${esc(u.project)} <span class="mute">· ${esc(S.dawName[u.daw] || u.daw)}${u.exact ? '' : ', по названию'}</span></li>`).join('')}${f.used_by.length > 8 ? `<li>и ещё ${f.used_by.length - 8}</li>` : ''}</ul>` : ''}
+    const k = selKey('plugin', f.path), on = S.sel.has(k), x = det(f.path);
+    return `<div class="fmt ${on ? 'picked' : ''}" data-ctx="path" data-path="${esc(f.path)}">
+      <label class="top pick"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" class="round" data-act="togFmt" data-name="${esc(p.name)}" data-path="${esc(f.path)}" ${on ? 'checked' : ''}><b>${esc(fmtLabel(p, f))}</b></span><span class="mono mute">${sz(f.size)}</span></label>
+      <div class="path">${esc(f.path)}</div>
+      <div class="mute" style="font-size:12px">Установлен: ${x.created ? dt(x.created) : '—'}${x.modified && x.modified !== x.created ? ` · изменён ${dt(x.modified)}` : ''}${x.version ? ` · версия ${esc(x.version)}` : ''}</div>
+      <div style="display:flex;gap:6px;margin:8px 0 6px;flex-wrap:wrap"><button class="btn sm" data-act="reveal" data-path="${esc(f.path)}">Показать в проводнике</button><button class="btn sm" data-act="props" data-path="${esc(f.path)}">Свойства</button></div>
+      ${usedList(f)}
       ${f.protected_by.length ? `<div class="note">${esc(f.reason)}</div>` : ''}
-      ${f.removable ? `<div class="mute" style="font-size:12px;margin-bottom:6px">${esc(f.reason)}</div><button class="btn ${on ? '' : 'pri'} sm" data-act="togP" data-path="${esc(f.path)}" data-label="${esc(p.name + ' ' + FMT[f.format])}" data-size="${f.size}">${on ? 'Снять выбор' : 'Выбрать'}</button>` : '<button class="btn sm" disabled>Удалять нельзя</button>'}</div>`;
+      ${f.removable ? `<div class="mute" style="font-size:12px">${esc(f.reason)}</div>` : `<div class="note" style="font-size:12px">Можно убрать, но проекты выше не найдут этот формат. Попадёт в корзину, вернуть можно.</div>`}</div>`;
   }).join('')}</section>
   <section><h3>Рекомендация</h3>${rec.length
-    ? `<div class="note info">${p.status === 'unused' ? 'Плагин не найден ни в одном проекте. ' : 'Оставить: ' + p.formats.filter((f) => !rec.includes(f.path)).map((f) => FMT[f.format]).join(', ') + '. '}Убрать: ${p.formats.filter((f) => rec.includes(f.path)).map((f) => FMT[f.format]).join(', ')} · ${sz(p.recommended_size)}.</div>
+    ? `<div class="note info">${p.status === 'unused' ? 'Плагин не найден ни в одном проекте. ' : 'Оставить: ' + p.formats.filter((f) => !rec.includes(f.path)).map((f) => fmtLabel(p, f)).join(', ') + '. '}Убрать: ${p.formats.filter((f) => rec.includes(f.path)).map((f) => fmtLabel(p, f)).join(', ')} · ${sz(p.recommended_size)}.</div>
        <p style="margin:10px 0 0"><button class="btn pri" data-act="selPluginRec" data-v="${esc(p.name)}">Выбрать рекомендованное</button></p>`
-    : '<div class="note ok">Здесь нечего убирать.</div>'}</section>`;
+    : '<div class="note ok">По проектам здесь нечего убирать.</div>'}</section>`;
 }
 
 /* --- projects --- */
@@ -244,6 +276,7 @@ function vSamples() {
   let kids = S.kids;
   if (S.onlyUnused) kids = kids.filter((k) => (k.is_dir ? k.unused_bytes > 0 : k.state === 'unused'));
   kids = sorted('samples', kids);
+  S.rows = S.rows || {}; S.rows.samples = kids;
   const here = S.kids.reduce((a, k) => a + k.unused_bytes + (k.state === 'unused' && !k.is_dir ? k.bytes : 0), 0);
   return head('Сэмплы') + `<div class="stats"><div class="stat"><b>${sz(s.bytes)}</b><span>${nf(s.files, 0)} файлов</span></div><div class="stat"><b>${sz(s.used_bytes)}</b><span>нужны проектам</span></div><div class="stat"><b>${sz(s.old_bytes)}</b><span>только в старых проектах</span></div><div class="stat"><b>${sz(s.unused_bytes)}</b><span>нигде не используются</span></div></div>
   ${crumbs()}<div class="tools"><button class="btn ${S.onlyUnused ? 'pri' : ''}" data-act="onlyUnused">Только неиспользуемое</button>
@@ -251,13 +284,13 @@ function vSamples() {
     <button class="btn" style="margin-left:auto" data-act="selUnusedHere" ${here ? '' : 'disabled'}>Выбрать неиспользуемое здесь (${sz(here)})</button></div>
   <div class="list"><div class="row hd c-sa"><span></span>${th('samples', 'name', 'Имя')}${th('samples', 'usage', 'Используется / нет')}${th('samples', 'files', 'Файлов', 1)}${th('samples', 'size', 'Размер', 1)}</div>` +
     (kids.map((k) => {
-      const checkable = !k.is_dir && (k.state === 'unused' || (k.state === 'oldonly' && S.allowOld));
+      const checkable = !k.is_dir;
       const on = !k.is_dir && S.sel.has(selKey('sample', k.idx));
       const total = k.bytes || 1;
       const st = !k.is_dir ? STATE[k.state] : null;
       const playing = !k.is_dir && S.playing === k.path;
       return `<div class="row c-sa" tabindex="0" data-act="${k.is_dir ? 'goDir' : 'selFile'}" data-v="${k.is_dir ? esc(k.path) : k.idx}" data-ctx="${k.is_dir ? 'dir' : 'sample'}" data-path="${esc(k.path)}" data-idx="${k.idx ?? ''}" data-name="${esc(k.name)}" data-size="${k.bytes}" data-state="${k.state || ''}" aria-selected="${!k.is_dir && S.file && S.file.idx === k.idx}">
-        <span>${checkable ? `<input type="checkbox" data-act="togS" data-idx="${k.idx}" data-label="${esc(k.name)}" data-size="${k.bytes}" ${on ? 'checked' : ''}>` : ''}</span>
+        <span>${checkable ? `<input type="checkbox" class="round" data-act="rowSample" data-i="${kids.indexOf(k)}" ${on ? 'checked' : ''} aria-label="Выбрать" title="Shift — выбрать диапазон">` : ''}</span>
         <div class="name" style="display:flex;gap:8px;align-items:center">${k.is_dir ? '<span class="mute">▸</span>' : `<button class="play ${playing ? 'on' : ''}" data-act="play" data-path="${esc(k.path)}" data-name="${esc(k.name)}" aria-label="Прослушать">${playing ? '❚❚' : '▶'}</button>`}<b>${esc(k.name)}</b></div>
         <div>${k.is_dir ? `<span class="mono" style="font-size:12px">${sz(k.used_bytes + k.owned_bytes + k.old_bytes)} из ${sz(k.bytes)}</span><div class="split"><i style="width:${(k.used_bytes + k.owned_bytes) / total * 100}%;background:var(--ok)"></i><i style="width:${k.old_bytes / total * 100}%;background:var(--warn)"></i><i style="width:${k.unused_bytes / total * 100}%;background:var(--bad)"></i></div>` : `<span class="pill ${st[0]}">${st[1]}</span>`}</div>
         <span class="num mono">${k.is_dir ? nf(k.files, 0) : ''}</span><span class="num mono">${sz(k.bytes)}</span></div>`;
@@ -438,7 +471,7 @@ function actionBar() {
 }
 function modal() {
   const m = S.modal;
-  return `<div class="modal-bg" data-act="closeModal"><div class="modal" data-stop="1"><h2>${esc(m.title)}</h2><div>${m.body}</div><div class="acts"><button class="btn" data-act="closeModal">Отмена</button><button class="btn ${m.danger ? 'danger' : 'pri'}" data-act="modalOk">${esc(m.ok)}</button></div></div></div>`;
+  return `<div class="modal-bg" data-act="closeModal"><div class="modal" data-stop="1"><h2>${esc(m.title)}</h2><div>${m.body}</div><div class="acts"><button class="btn" data-act="closeModal">Отмена</button><button class="btn ${m.danger ? 'danger' : 'pri'}" data-act="modalOk" ${m.okDisabled && !S.ack ? 'disabled' : ''}>${esc(m.ok)}</button></div></div></div>`;
 }
 
 /* --- wizard & scan --- */
@@ -464,6 +497,30 @@ function paintProgress() {
 }
 
 /* ---------- actions ---------- */
+function fmtLabel(p, f) {
+  const same = p.formats.filter((x) => x.format === f.format);
+  if (same.length < 2) return FMT[f.format];
+  const parts = f.path.replace(/\\/g, '/').split('/');
+  return `${FMT[f.format]} (${parts[parts.length - 2] || ''})`;
+}
+function plugItem(p, f) {
+  const needed = !f.removable;
+  return { kind: 'plugin', key: f.path, label: p.name + ' ' + fmtLabel(p, f), size: f.size, needed,
+    why: needed ? (f.used_by.length ? `нужен в проектах: ${f.used_by.length}` : f.reason) : '', projects: f.used_by.map((u) => u.project) };
+}
+function sampleItem(k) {
+  const ok = k.state === 'unused' || (k.state === 'oldonly' && S.allowOld);
+  return { kind: 'sample', key: String(k.idx), label: k.name, size: k.size ?? k.bytes, allowOld: S.allowOld, needed: !ok,
+    why: ok ? '' : ({ used: 'используется в проектах', oldonly: 'используется в старых проектах', projectowned: 'лежит в папке проекта' })[k.state] || '' };
+}
+/** Toggle one row; with Shift, apply the same state to every row between the last click and this one. */
+function rangeToggle(table, rows, idx, shift, itemsOf) {
+  const target = !itemsOf(rows[idx]).every((it) => S.sel.has(selKey(it.kind, it.key)));
+  const from = shift && S.last[table] != null ? Math.min(S.last[table], idx) : idx;
+  const to = shift && S.last[table] != null ? Math.max(S.last[table], idx) : idx;
+  for (let i = from; i <= to; i++) itemsOf(rows[i]).forEach((it) => { const k = selKey(it.kind, it.key); target ? S.sel.set(k, it) : S.sel.delete(k); });
+  S.last[table] = idx;
+}
 function addSel(item) { S.sel.set(selKey(item.kind, item.key), item); }
 function togSel(item) { const k = selKey(item.kind, item.key); S.sel.has(k) ? S.sel.delete(k) : S.sel.set(k, item); }
 
@@ -476,9 +533,16 @@ const A = {
   filter: (el) => { S.filter = el.dataset.v; render(); },
   selP: (el) => { S.selP = el.dataset.v; render(); },
   selPr: (el) => { S.selPr = +el.dataset.v; render(); },
+  rowPlug: (el, e) => { e.stopPropagation(); rangeToggle('plugins', S.rows.plugins, +el.dataset.i, e.shiftKey, (p) => p.formats.map((f) => plugItem(p, f))); render(); },
+  rowSample: (el, e) => { e.stopPropagation(); rangeToggle('samples', S.rows.samples, +el.dataset.i, e.shiftKey, (k) => (k.is_dir ? [] : [sampleItem(k)])); render(); },
+  togFmt: (el, e) => { e.stopPropagation(); const p = visiblePlugins().find((x) => x.name === el.dataset.name); const f = p.formats.find((x) => x.path === el.dataset.path); const k = selKey('plugin', f.path); S.sel.has(k) ? S.sel.delete(k) : S.sel.set(k, plugItem(p, f)); render(); },
+  expandUsed: (el) => { S.expand[el.dataset.path] = !S.expand[el.dataset.path]; render(); },
+  props: (el, e) => { e.stopPropagation(); invoke('show_properties', { path: el.dataset.path }).catch((err) => toast(String(err))); },
+  describe: (el) => { const d = S.details[el.dataset.v]; const v = d && d !== 'loading' && d.vendor ? d.vendor + ' ' : ''; invoke('web_search', { query: `${v}${el.dataset.v} plugin что это`, images: false }).catch((e) => toast(String(e))); },
+  ackNeeded: (el) => { S.ack = el.checked; const b = $('[data-act=modalOk]'); if (b) b.disabled = !S.ack; },
   togP: (el) => { togSel({ kind: 'plugin', key: el.dataset.path, label: el.dataset.label, size: +el.dataset.size }); render(); },
-  selPluginRec: (el) => { const p = visiblePlugins().find((x) => x.name === el.dataset.v); p.formats.filter((f) => p.recommended.includes(f.path)).forEach((f) => addSel({ kind: 'plugin', key: f.path, label: p.name + ' ' + FMT[f.format], size: f.size })); render(); },
-  selRec: () => { visiblePlugins().forEach((p) => p.formats.filter((f) => p.recommended.includes(f.path)).forEach((f) => addSel({ kind: 'plugin', key: f.path, label: p.name + ' ' + FMT[f.format], size: f.size }))); render(); toast(`Выбрано: ${S.sel.size}. Проверьте и нажмите «В корзину».`); },
+  selPluginRec: (el) => { const p = visiblePlugins().find((x) => x.name === el.dataset.v); p.formats.filter((f) => p.recommended.includes(f.path)).forEach((f) => addSel(plugItem(p, f))); render(); },
+  selRec: () => { visiblePlugins().forEach((p) => p.formats.filter((f) => p.recommended.includes(f.path)).forEach((f) => addSel(plugItem(p, f)))); render(); toast(`Выбрано: ${S.sel.size}. Проверьте и нажмите «В корзину».`); },
   goDir: (el) => goDir(el.dataset.v || null),
   histBack: () => { if (S.hpos > 0) { S.hpos--; goDir(S.hist[S.hpos], false); } },
   histFwd: () => { if (S.hpos < S.hist.length - 1) { S.hpos++; goDir(S.hist[S.hpos], false); } },
@@ -487,7 +551,7 @@ const A = {
   playStop: () => { const a = $('#audio'); a.pause(); a.removeAttribute('src'); S.playing = null; render(); },
   seek: (el, e) => { const a = $('#audio'); const r = el.getBoundingClientRect(); if (a.duration) a.currentTime = (e.clientX - r.left) / r.width * a.duration; },
   reveal: (el, e) => { e.stopPropagation(); reveal(el.dataset.path); },
-  webSearch: (el) => invoke('web_search', { query: el.dataset.v + ' plugin' }).catch((e) => toast(String(e))),
+  webSearch: (el) => invoke('web_search', { query: el.dataset.v + ' plugin', images: true }).catch((e) => toast(String(e))),
   uninstallMenu: (el) => uninstallFor(el.dataset.v),
   runUninst: async (el) => { S.modal = null; render(); try { await invoke('run_uninstaller', { id: el.dataset.v }); toast('Деинсталлятор запущен. После удаления обновите скан.'); } catch (e) { toast(String(e)); } },
   menuPick: (el) => { const it = S.menu.items[+el.dataset.i]; S.menu = null; render(); Promise.resolve(it.fn()).catch((e) => toast(String(e))); },
@@ -531,9 +595,13 @@ const A = {
   },
   clearSel: () => { S.sel.clear(); render(); },
   confirmTrash: () => {
-    const items = [...S.sel.values()];
-    S.modal = { title: `Переместить в корзину: ${items.length}`, ok: 'Переместить', danger: false,
-      body: `<p class="mute" style="margin-top:0">Освободится ${sz(selSize())}, когда вы очистите корзину. До этого всё можно вернуть.</p><ul style="padding-left:18px;margin:0">${items.slice(0, 7).map((i) => `<li>${esc(i.label)} <span class="mute">${sz(i.size)}</span></li>`).join('')}${items.length > 7 ? `<li class="mute">и ещё ${items.length - 7}</li>` : ''}</ul>`,
+    const items = [...S.sel.values()], needed = items.filter((i) => i.needed), free = items.filter((i) => !i.needed);
+    S.ack = !needed.length;
+    S.modal = { title: `Переместить в корзину: ${items.length}`, ok: 'Переместить', danger: needed.length > 0, okDisabled: needed.length > 0,
+      body: `<p class="mute" style="margin-top:0">Освободится ${sz(selSize())}, когда вы очистите корзину. До этого всё можно вернуть.</p>
+      ${free.length ? `<h3 class="mh">Не используется (${free.length})</h3><ul class="ml">${free.slice(0, 6).map((i) => `<li>${esc(i.label)} <span class="mute">${sz(i.size)}</span></li>`).join('')}${free.length > 6 ? `<li class="mute">и ещё ${free.length - 6}</li>` : ''}</ul>` : ''}
+      ${needed.length ? `<div class="note bad" style="margin-top:12px"><b>Нужны проектам (${needed.length})</b><ul class="ml">${needed.slice(0, 6).map((i) => `<li>${esc(i.label)}: ${esc(i.why)}${i.projects && i.projects.length ? ` <span>(${esc(i.projects.slice(0, 3).join(', '))}${i.projects.length > 3 ? '…' : ''})</span>` : ''}</li>`).join('')}${needed.length > 6 ? `<li>и ещё ${needed.length - 6}</li>` : ''}</ul>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;color:var(--fg)"><input type="checkbox" data-act="ackNeeded"> Понимаю: эти проекты откроются без этих плагинов или файлов, пока я не верну их из корзины</label></div>` : ''}`,
       fn: doTrash };
     render();
   },
@@ -578,7 +646,7 @@ const A = {
 };
 
 async function doTrash() {
-  const items = [...S.sel.values()].map((i) => ({ kind: i.kind, key: i.key, label: i.label, allow_old: !!i.allowOld }));
+  const items = [...S.sel.values()].map((i) => ({ kind: i.kind, key: i.key, label: i.label, allow_old: !!i.allowOld, force: !!i.needed }));
   const res = await invoke('trash_move', { items });
   res.moved.filter((m) => m.kind === 'plugin').forEach((m) => S.goneP.add(m.original_path));
   S.sel.clear();
@@ -630,11 +698,17 @@ document.addEventListener('contextmenu', (e) => {
     const p = visiblePlugins().find((x) => x.name === d.v);
     if (!p) return;
     S.selP = p.name;
-    items.push({ label: 'Показать в проводнике', fn: () => reveal(p.formats[0].path) });
-    items.push({ label: 'Деинсталлировать…', hint: 'утилита удаления производителя', fn: () => uninstallFor(p.name) });
-    items.push({ label: 'Найти в интернете', hint: 'картинки интерфейса', fn: () => invoke('web_search', { query: p.name + ' plugin' }) });
-    items.push('-');
+    for (const f of p.formats) {
+      const on = S.sel.has(selKey('plugin', f.path));
+      items.push({ label: `${on ? 'Снять' : 'Выбрать'} ${fmtLabel(p, f)} для корзины`, hint: f.removable ? 'не используется в проектах' : (f.used_by.length ? `нужен в проектах: ${f.used_by.length}` : 'может быть нужен'), fn: () => { const it = plugItem(p, f); on ? S.sel.delete(selKey('plugin', f.path)) : S.sel.set(selKey('plugin', f.path), it); render(); } });
+    }
     items.push({ label: 'Выбрать рекомендованное для корзины', disabled: !p.recommended.length, fn: () => A.selPluginRec({ dataset: { v: p.name } }) });
+    items.push('-');
+    items.push({ label: 'Показать в проводнике', fn: () => reveal(p.formats[0].path) });
+    items.push({ label: 'Свойства', hint: 'окно свойств Windows', fn: () => invoke('show_properties', { path: p.formats[0].path }).catch((e) => toast(String(e))) });
+    items.push({ label: 'Описание в интернете', fn: () => A.describe({ dataset: { v: p.name } }) });
+    items.push({ label: 'Картинки в интернете', fn: () => invoke('web_search', { query: p.name + ' plugin', images: true }) });
+    items.push({ label: 'Деинсталлировать…', hint: 'утилита удаления производителя', danger: true, fn: () => uninstallFor(p.name) });
     items.push({ label: 'Скопировать путь', fn: () => copyText(p.formats.map((f) => f.path).join('\n')) });
   } else if (d.ctx === 'sample') {
     const allowed = d.state === 'unused' || (d.state === 'oldonly' && S.allowOld);
@@ -642,7 +716,10 @@ document.addEventListener('contextmenu', (e) => {
     items.push({ label: 'Показать в проводнике', fn: () => reveal(path) });
     items.push({ label: 'Скопировать путь', fn: () => copyText(path) });
     items.push('-');
-    items.push({ label: allowed ? 'Выбрать для корзины' : 'Нельзя убрать: файл нужен', disabled: !allowed, fn: () => { togSel({ kind: 'sample', key: d.idx, label: d.name, size: +d.size, allowOld: S.allowOld }); render(); } });
+    const k = { idx: +d.idx, name: d.name, size: +d.size, state: d.state };
+    const on = S.sel.has(selKey('sample', d.idx));
+    items.push({ label: on ? 'Снять выбор' : 'Выбрать для корзины', hint: allowed ? '' : 'файл нужен проектам', fn: () => { on ? S.sel.delete(selKey('sample', d.idx)) : S.sel.set(selKey('sample', d.idx), sampleItem(k)); render(); } });
+    items.push({ label: 'Свойства', fn: () => invoke('show_properties', { path }).catch((e) => toast(String(e))) });
   } else if (d.ctx === 'dir') {
     items.push({ label: 'Открыть', fn: () => goDir(path) });
     items.push({ label: 'Показать в проводнике', fn: () => reveal(path) });
