@@ -195,3 +195,9 @@ input.round:indeterminate::after{content:"";width:7px;height:2px;background:var(
 .dupli{cursor:pointer;border-radius:4px}
 .dupli:hover{background:var(--panel2)}
 .dupli.cur{background:var(--acc-bg)}
+.tabs{display:flex;gap:2px;padding:8px 12px 0;border-bottom:1px solid var(--line)}
+.tabs button{all:unset;cursor:pointer;padding:8px 14px;border-radius:6px 6px 0 0;color:var(--mute);display:flex;gap:8px;align-items:center;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button:hover{color:var(--fg)}
+.tabs button[aria-pressed="true"]{color:var(--fg);border-bottom-color:var(--accent)}
+.tabs button:focus-visible{outline:2px solid var(--accent)}
+.badge.zero{background:var(--panel2);color:var(--mute)}

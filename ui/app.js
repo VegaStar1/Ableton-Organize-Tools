@@ -436,14 +436,21 @@ function sDups() {
 }
 
 /* --- trash --- */
+const TRASH_TABS = [['plugin', 'Плагины'], ['sample', 'Файлы'], ['all', 'Всё']];
+function trashTab() { return S.trashTab || 'plugin'; }
+function trashItems() { const k = trashTab(); return k === 'all' ? S.trash : S.trash.filter((i) => (k === 'plugin' ? i.kind === 'plugin' : i.kind !== 'plugin')); }
 function vTrash() {
-  const t = sorted('trash', S.trash), total = t.reduce((a, i) => a + i.size, 0);
-  return head('Корзина') + `<div class="stats"><div class="stat"><b>${t.length}</b><span>элементов</span></div><div class="stat"><b>${sz(total)}</b><span>занимает место, пока не очистите</span></div></div>
-  <div class="tools"><span class="mute">Здесь лежит то, что вы убрали. Диск освободится, когда вы очистите корзину.</span>
-    <button class="btn danger" style="margin-left:auto" data-act="emptyTrash" ${t.length ? '' : 'disabled'}>Очистить корзину</button></div>
+  const t = sorted('trash', trashItems()), total = t.reduce((a, i) => a + i.size, 0);
+  const count = (k) => (k === 'all' ? S.trash : S.trash.filter((i) => (k === 'plugin' ? i.kind === 'plugin' : i.kind !== 'plugin'))).length;
+  const word = { plugin: 'плагинов', sample: 'файлов', all: 'элементов' }[trashTab()];
+  return head('Корзина') + `<div class="tabs">${TRASH_TABS.map(([k, l]) => `<button data-act="trashTab" data-v="${k}" aria-pressed="${trashTab() === k}">${l}<span class="badge ${count(k) ? '' : 'zero'}">${count(k)}</span></button>`).join('')}</div>
+  <div class="stats"><div class="stat"><b>${t.length}</b><span>${word}</span></div><div class="stat"><b>${sz(total)}</b><span>занимает место, пока не очистите</span></div></div>
+  <div class="tools"><span class="mute">Диск освободится, когда вы очистите корзину.</span>
+    <button class="btn" style="margin-left:auto" data-act="restoreTab" ${t.length ? '' : 'disabled'}>Вернуть все ${word}</button>
+    <button class="btn danger" data-act="emptyTrash" ${t.length ? '' : 'disabled'}>Очистить: ${TRASH_TABS.find(([k]) => k === trashTab())[1].toLowerCase()}</button></div>
   <div class="list"><div class="row hd c-tr"><span></span>${th('trash', 'name', 'Что')}${th('trash', 'kind', 'Тип')}${th('trash', 'size', 'Размер', 1)}${th('trash', 'date', 'Убрано', 1)}</div>` +
-    (t.map((i) => `<div class="row c-tr" style="cursor:default" data-ctx="trash" data-id="${i.id}" data-path="${esc(i.original_path)}"><span></span><div class="name"><b>${esc(i.label)}</b><small>${esc(i.original_path)}</small></div><span class="mute">${i.kind === 'plugin' ? 'Плагин' : 'Сэмпл'}</span><span class="num mono">${sz(i.size)}</span>
-      <span style="display:flex;gap:6px;justify-content:flex-end;align-items:center"><span class="mute" style="font-size:11.5px">${dt(i.trashed_at)}</span><button class="btn sm" data-act="restore" data-v="${i.id}">Вернуть</button><button class="btn sm danger" data-act="purgeOne" data-v="${i.id}">Удалить</button></span></div>`).join('') || '<div class="empty">Корзина пуста</div>') + '</div>';
+    (t.map((i) => `<div class="row c-tr" style="cursor:default" data-ctx="trash" data-id="${i.id}" data-path="${esc(i.original_path)}"><span></span><div class="name"><b>${esc(i.label)}</b><small>${esc(i.original_path)}</small></div><span class="mute">${i.kind === 'plugin' ? 'Плагин' : 'Файл'}</span><span class="num mono">${sz(i.size)}</span>
+      <span style="display:flex;gap:6px;justify-content:flex-end;align-items:center"><span class="mute" style="font-size:11.5px">${dt(i.trashed_at)}</span><button class="btn sm" data-act="restore" data-v="${i.id}">Вернуть</button><button class="btn sm danger" data-act="purgeOne" data-v="${i.id}">Удалить</button></span></div>`).join('') || `<div class="empty">${trashTab() === 'plugin' ? 'Плагинов в корзине нет' : trashTab() === 'sample' ? 'Файлов в корзине нет' : 'Корзина пуста'}</div>`) + '</div>';
 }
 function sTrash() {
   return `<section><h2>Как работает корзина</h2></section><section>
@@ -509,15 +516,35 @@ async function uninstallFor(name) {
     <p class="mute" style="font-size:12px">После удаления нажмите «Обновить скан».</p>`, fn: async () => {} };
   render();
 }
+const CONVERT = ['aif', 'aiff', 'aifc', 'caf', 'm4a', 'alac'];
+async function usePreview(a, path) {
+  toast('Готовлю файл к прослушиванию…');
+  try {
+    const p = await invoke('preview_path', { path });
+    if (S.playing !== path) return false; // user picked another file meanwhile
+    a.src = T.core.convertFileSrc(p); a.dataset.preview = '1';
+    $('#toast').hidden = true;
+    return true;
+  } catch (e) { toast('Не удалось воспроизвести: ' + e); return false; }
+}
 async function playPath(path) {
   const a = $('#audio');
   S.dock = path;
   if (S.playing === path && !a.paused) { a.pause(); render(); return; }
   if (S.playing !== path) {
     if (!T) { toast('Прослушивание работает в приложении'); return; }
-    a.src = toSrc(path); S.playing = path;
+    S.playing = path; delete a.dataset.preview;
+    const ext = path.split('.').pop().toLowerCase();
+    // formats the web view cannot play go through a converted WAV copy
+    if (CONVERT.includes(ext)) { if (!(await usePreview(a, path))) return; }
+    else a.src = toSrc(path);
   }
-  try { await a.play(); } catch (e) { const ext = path.split('.').pop().toLowerCase(); toast(['aif', 'aiff', 'rex', 'rx2', 'caf', 'w64'].includes(ext) ? `Формат .${ext} не воспроизводится встроенным плеером` : 'Не удалось воспроизвести файл'); }
+  try { await a.play(); }
+  catch (e) {
+    // e.g. a WAV with an unusual codec: try the converted copy once
+    if (!a.dataset.preview && (await usePreview(a, path))) { try { await a.play(); } catch (e2) { toast('Не удалось воспроизвести файл'); } }
+    else toast('Не удалось воспроизвести файл');
+  }
   render();
 }
 
@@ -684,10 +711,19 @@ const A = {
     S.modal = { title: 'Удалить навсегда?', ok: 'Удалить навсегда', danger: true, body: `<p>${esc(it.label)} будет стёрт с диска. Это нельзя отменить.</p>`, fn: async () => { await invoke('trash_purge', { ids: [id] }); await afterTrashChange(); toast('Удалено навсегда'); } };
     render();
   },
+  trashTab: (el) => { S.trashTab = el.dataset.v; render(); },
   emptyTrash: () => {
-    const total = S.trash.reduce((a, i) => a + i.size, 0);
-    S.modal = { title: 'Очистить корзину?', ok: 'Очистить', danger: true, body: `<p>Будет стёрто ${S.trash.length} элем. и освобождено ${sz(total)}. Это нельзя отменить.</p>`, fn: async () => { await invoke('trash_empty'); await afterTrashChange(); toast(`Освобождено ${sz(total)}`); } };
+    const items = trashItems(), total = items.reduce((a, i) => a + i.size, 0), what = { plugin: 'плагинов', sample: 'файлов', all: 'элементов' }[trashTab()];
+    S.modal = { title: trashTab() === 'all' ? 'Очистить всю корзину?' : `Удалить из корзины все ${what}?`, ok: 'Удалить навсегда', danger: true,
+      body: `<p>Будет стёрто ${items.length} ${what} и освобождено ${sz(total)}. Это нельзя отменить.</p>${trashTab() !== 'all' ? `<p class="mute">${trashTab() === 'plugin' ? 'Файлы' : 'Плагины'} в корзине останутся.</p>` : ''}`,
+      fn: async () => { await invoke('trash_purge', { ids: items.map((i) => i.id) }); await afterTrashChange(); toast(`Освобождено ${sz(total)}`); } };
     render();
+  },
+  restoreTab: async () => {
+    const items = trashItems();
+    const errs = await invoke('trash_restore', { ids: items.map((i) => i.id) });
+    await afterTrashChange();
+    toast(errs.length ? `Вернул ${items.length - errs.length}, не удалось: ${errs.length}. ${errs[0]}` : `Вернул на место: ${items.length}`);
   },
   toastAction: () => { if (toast.fn) toast.fn(); $('#toast').hidden = true; },
   rescan: () => { if (S.view === 'wizard') S.step = 2; startScan(); },

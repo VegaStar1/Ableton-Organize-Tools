@@ -52,6 +52,11 @@ fn settings_path(d: &Path) -> PathBuf { d.join("settings.json") }
 fn bins_path(d: &Path) -> PathBuf { d.join("trash-bins.json") }
 fn cache_path(d: &Path) -> PathBuf { d.join("project-cache.json") }
 fn log_path(d: &Path) -> PathBuf { d.join("crash.log") }
+fn previews_dir(d: &Path) -> PathBuf { d.join("previews") }
+
+fn dir_size(p: &Path) -> u64 {
+    std::fs::read_dir(p).map(|rd| rd.flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum()).unwrap_or(0)
+}
 
 /// Run blocking work off the UI thread and turn panics into readable errors.
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> R<T> + Send + 'static) -> R<T> {
@@ -375,6 +380,30 @@ async fn wave(app: AppHandle, path: String, buckets: usize) -> R<Wave> {
     }).await
 }
 
+/// A copy of an audio file that the built-in player can play (for AIFF, CAF,
+/// ALAC and other formats the web view does not support). Cached by source
+/// path, size and date.
+#[tauri::command]
+async fn preview_path(app: AppHandle, path: String) -> R<String> {
+    blocking(move || {
+        let st = app.state::<AppState>();
+        let src = system::native(Path::new(&path));
+        let md = std::fs::metadata(&src).map_err(|_| "Файл не найден".to_string())?;
+        let mtime = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+        let key = format!("{}|{}|{}", src.display(), md.len(), mtime);
+        let h = key.bytes().fold(1469598103934665603u64, |h, b| (h ^ b as u64).wrapping_mul(1099511628211));
+        let dest = previews_dir(&st.data_dir).join(format!("{h:016x}.wav"));
+        if !dest.exists() {
+            let _slot = WaveSlot::acquire();
+            let d2 = dest.clone();
+            std::thread::Builder::new().stack_size(32 << 20).spawn(move || {
+                std::panic::catch_unwind(|| waveform::transcode_to_wav(&src, &d2)).unwrap_or_else(|_| Err(organizer_core::Error::Msg("файл не удалось разобрать".into())))
+            }).map_err(err)?.join().map_err(|_| "файл не удалось разобрать".to_string())?.map_err(err)?;
+        }
+        Ok(dest.to_string_lossy().into_owned())
+    }).await
+}
+
 // ---------- program cache ----------
 
 #[derive(Serialize)]
@@ -389,7 +418,7 @@ async fn cache_info(app: AppHandle) -> R<CacheInfo> {
     blocking(move || {
         let d = app.state::<AppState>().data_dir.clone();
         let files = cache_files(&d);
-        let bytes = files.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+        let bytes = files.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum::<u64>() + dir_size(&previews_dir(&d));
         Ok(CacheInfo { bytes, files: files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), folder: d.to_string_lossy().into_owned() })
     }).await
 }
@@ -404,6 +433,8 @@ async fn clear_cache(app: AppHandle) -> R<u64> {
             freed += std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
             std::fs::remove_file(&p).map_err(err)?;
         }
+        let prev = previews_dir(&d);
+        if prev.exists() { freed += dir_size(&prev); let _ = std::fs::remove_dir_all(&prev); }
         Ok(freed)
     }).await
 }
@@ -439,7 +470,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             boot, save_settings, run_scan, sample_children, sample_top, sample_info, sample_summary,
             find_duplicates, cancel_duplicates, trash_move, trash_list, trash_restore, trash_purge, trash_empty,
-            reveal_path, web_search, show_properties, copy_text, plugin_details, plugin_uninstallers, run_uninstaller, cache_info, clear_cache, wave
+            reveal_path, web_search, show_properties, copy_text, plugin_details, plugin_uninstallers, run_uninstaller, cache_info, clear_cache, wave, preview_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running Debridr");
