@@ -221,8 +221,8 @@ function sPlugin() {
   const rec = p.recommended;
   return `${p.image ? `<img class="shot" src="${esc(toSrc(p.image))}" alt="${esc(p.name)}">` : ''}<section><h2>${esc(p.name)}</h2>
     <dl class="facts">
-      <dt>Производитель</dt><dd>${!ready ? '<span class="mute">читаю…</span>' : d.vendor ? esc(d.vendor) + (d.publisher_from ? ' <span class="mute">(из «Приложений» Windows)</span>' : '') : '<span class="mute">не указан</span>'}</dd>
-      <dt>Тип</dt><dd>${!ready ? '…' : first.kind ? esc(first.kind) + (first.kind_source === 'name' ? ' <span class="mute">(угадано по названию)</span>' : '') : '<span class="mute">неизвестно</span>'}</dd>
+      <dt>Производитель</dt><dd>${!ready ? '<span class="mute">читаю…</span>' : d.vendor ? esc(d.vendor) + (d.publisher_from ? ` <span class="mute">(по записи «${esc(d.publisher_from)}» в «Приложениях» Windows)</span>` : ' <span class="mute">(указан в файле плагина)</span>') : '<span class="mute">в файле не указан</span>'}</dd>
+      <dt>Тип</dt><dd>${!ready ? '…' : first.kind ? esc(first.kind) + ' <span class="mute">(указан самим плагином)</span>' : '<span class="mute">плагин не сообщает. Узнать: «Описание в интернете»</span>'}</dd>
       ${version ? `<dt>Версия</dt><dd class="mono">${esc(version)}</dd>` : ''}
       ${descr ? `<dt>Описание</dt><dd>${esc(descr)}</dd>` : ''}
       <dt>В проектах</dt><dd>${p.used_projects}</dd>

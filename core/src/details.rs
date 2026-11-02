@@ -2,7 +2,6 @@
 //! vendor, version, effect type, install date. Everything comes from the plugin
 //! itself; nothing is downloaded.
 use serde::Serialize;
-use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -45,7 +44,8 @@ pub fn read(path: &Path, display_name: &str) -> PluginDetails {
             if d.version.is_none() { d.version = v.iter().find(|(k, _)| k == "ProductVersion" || k == "FileVersion").map(|(_, v)| v.clone()); }
             if d.description.is_none() { d.description = v.iter().find(|(k, _)| k == "FileDescription").map(|(_, v)| v.clone()).filter(|x| !x.eq_ignore_ascii_case(display_name)); }
         }
-        if d.categories.is_empty() { d.categories = vst3_categories_in_binary(bin); }
+        // Category strings inside the binary are NOT used: the VST3 SDK compiles its whole
+        // table of categories ("Fx|Reverb", "Instrument|Synth"...) into every plugin.
     }
     // 3. macOS bundle Info.plist
     let plist = path.join("Contents").join("Info.plist");
@@ -55,8 +55,9 @@ pub fn read(path: &Path, display_name: &str) -> PluginDetails {
     }
     d.vendor = d.vendor.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
 
+    // Only what the plugin declares about itself; no guessing.
     if let Some(k) = kind_from_categories(&d.categories) { d.kind = Some(k); d.kind_source = Some("plugin".into()); }
-    else if let Some(k) = kind_from_name(display_name) { d.kind = Some(k); d.kind_source = Some("name".into()); }
+    let _ = display_name;
     d
 }
 
@@ -183,38 +184,6 @@ fn find_version_value(buf: &[u8], key: &str) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// VST3 plugins carry their category as ASCII text like "Fx|Dynamics".
-fn vst3_categories_in_binary(path: &Path) -> Vec<String> {
-    let Ok(mut f) = File::open(path) else { return vec![] };
-    let mut found = BTreeSet::new();
-    let mut buf = vec![0u8; 4 << 20];
-    let mut carry: Vec<u8> = Vec::new();
-    let mut total = 0u64;
-    loop {
-        let Ok(n) = f.read(&mut buf) else { break };
-        if n == 0 { break; }
-        total += n as u64;
-        carry.extend_from_slice(&buf[..n]);
-        for prefix in [&b"Fx|"[..], &b"Instrument|"[..], &b"Instrument\0"[..], &b"Fx\0"[..]] {
-            let mut i = 0;
-            while let Some(p) = carry[i..].windows(prefix.len()).position(|w| w == prefix) {
-                let s = i + p;
-                if s == 0 || carry[s - 1] == 0 {
-                    let end = carry[s..].iter().position(|&c| c == 0).map(|e| s + e).unwrap_or(carry.len());
-                    if let Ok(t) = std::str::from_utf8(&carry[s..end]) {
-                        if t.len() <= 80 && t.chars().all(|c| c.is_ascii_alphanumeric() || " |-".contains(c)) && t.contains('|') { found.insert(t.to_string()); }
-                    }
-                }
-                i = s + 1;
-            }
-        }
-        if found.len() > 8 || total > (512 << 20) { break; }
-        let keep = carry.len().min(128);
-        carry.drain(..carry.len() - keep);
-    }
-    found.into_iter().collect()
-}
-
 fn kind_from_categories(cats: &[String]) -> Option<String> {
     let map: &[(&str, &str)] = &[
         ("Reverb", "Реверб"), ("Delay", "Дилей"), ("Dynamics", "Динамика: компрессор, лимитер"), ("EQ", "Эквалайзер"),
@@ -238,22 +207,6 @@ fn kind_from_categories(cats: &[String]) -> Option<String> {
     Some(labels.join(", "))
 }
 
-/// Last resort for formats without categories (VST2): common words in the name.
-fn kind_from_name(name: &str) -> Option<String> {
-    let n = name.to_lowercase();
-    let map: &[(&[&str], &str)] = &[
-        (&["verb", "room", "hall", "plate", "space"], "Реверб"), (&["delay", "echo", "tape"], "Дилей"),
-        (&["comp", "limit", "clip", "gate", "transient", "dyn", "76", "la-2a", "1176", "bus"], "Динамика: компрессор, лимитер"),
-        (&["eq", "equal", "pro-q", "pultec"], "Эквалайзер"), (&["filter"], "Фильтр"),
-        (&["sat", "dist", "drive", "decapitator", "crush", "tube", "amp", "guitar rig"], "Дисторшн, сатурация"),
-        (&["chorus", "flang", "phase", "mod", "trem"], "Модуляция"), (&["tune", "pitch", "melodyne"], "Питч, тюнинг"),
-        (&["ozone", "master", "maximizer"], "Мастеринг"), (&["synth", "serum", "massive", "sylenth", "pigments", "omnisphere", "vital", "diva", "spire"], "Синтезатор"),
-        (&["kontakt", "sampler"], "Сэмплер"), (&["drum", "kick", "808", "battery"], "Драмы"), (&["analy", "meter", "scope"], "Анализатор"),
-        (&["stereo", "width", "imager"], "Пространство, стерео"), (&["vocal", "voice"], "Вокал"),
-    ];
-    map.iter().find(|(keys, _)| keys.iter().any(|k| n.contains(k))).map(|(_, l)| l.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,16 +224,16 @@ mod tests {
         assert_eq!(r.kind_source.as_deref(), Some("plugin"));
     }
     #[test]
-    fn binary_category_and_name_guess() {
+    fn sdk_category_table_in_binary_is_ignored() {
+        // a binary that contains the SDK's full category list must not get a type
         let d = tempfile::tempdir().unwrap();
-        let f = d.path().join("Thing.vst3");
-        std::fs::write(&f, b"MZ\0\0junk\0Fx|Dynamics\0more").unwrap();
-        assert_eq!(read(&f, "Thing").kind.as_deref(), Some("Динамика: компрессор, лимитер"));
+        let f = d.path().join("Guitar.vst3");
+        std::fs::write(&f, b"MZ\0\0\0Fx|Analyzer\0Fx|Delay\0Fx|Reverb\0Instrument|Synth\0").unwrap();
+        let r = read(&f, "Guitar");
+        assert!(r.kind.is_none(), "{:?}", r.kind);
         let g = d.path().join("SuperVerb.dll");
         std::fs::write(&g, b"nothing").unwrap();
-        let r = read(&g, "SuperVerb");
-        assert_eq!(r.kind.as_deref(), Some("Реверб"));
-        assert_eq!(r.kind_source.as_deref(), Some("name"));
+        assert!(read(&g, "SuperVerb").kind.is_none(), "no guessing from the name");
     }
     #[test]
     fn version_value_parsing() {
