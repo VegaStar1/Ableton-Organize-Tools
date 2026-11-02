@@ -192,3 +192,6 @@ input.round:indeterminate::after{content:"";width:7px;height:2px;background:var(
 .mh{margin:12px 0 4px;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:var(--mute)}
 .ml{padding-left:18px;margin:4px 0 0}
 .btn[disabled]{opacity:.45;cursor:not-allowed}
+.dupli{cursor:pointer;border-radius:4px}
+.dupli:hover{background:var(--panel2)}
+.dupli.cur{background:var(--acc-bg)}

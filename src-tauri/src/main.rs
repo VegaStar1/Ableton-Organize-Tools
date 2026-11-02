@@ -138,7 +138,7 @@ async fn find_duplicates(app: AppHandle, min_size: u64) -> R<Option<Vec<(DupGrou
         let an = g.as_ref().ok_or("Сначала выполните скан")?;
         let h = app.clone();
         let res = duplicates::find(&an.samples, min_size, &|p| { let _ = h.emit("dup-progress", p); }, &st.dup_cancel);
-        Ok(res.map(|groups| groups.into_iter().take(1000).map(|g| { let f = g.files.iter().map(|&i| an.samples.file_info(i)).collect(); (g, f) }).collect()))
+        Ok(res.map(|groups| groups.into_iter().map(|g| { let f = g.files.iter().map(|&i| an.samples.file_info(i)).collect(); (g, f) }).collect()))
     }).await
 }
 
@@ -270,6 +270,13 @@ async fn reveal_path(path: String) -> R<()> {
 #[tauri::command]
 async fn web_search(query: String, images: Option<bool>) -> R<()> {
     blocking(move || system::web_search(&query, images.unwrap_or(true)).map_err(err)).await
+}
+
+/// Copy text through the OS clipboard (the web view may refuse clipboard access).
+#[tauri::command]
+async fn copy_text(app: AppHandle, text: String) -> R<()> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    app.clipboard().write_text(text).map_err(err)
 }
 
 #[tauri::command]
@@ -417,6 +424,7 @@ fn migrate_from_old_name(new_dir: &Path) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir().unwrap_or_else(|_| dirs::data_dir().unwrap_or_default().join("Debridr"));
             migrate_from_old_name(&data_dir);
@@ -431,7 +439,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             boot, save_settings, run_scan, sample_children, sample_top, sample_info, sample_summary,
             find_duplicates, cancel_duplicates, trash_move, trash_list, trash_restore, trash_purge, trash_empty,
-            reveal_path, web_search, show_properties, plugin_details, plugin_uninstallers, run_uninstaller, cache_info, clear_cache, wave
+            reveal_path, web_search, show_properties, copy_text, plugin_details, plugin_uninstallers, run_uninstaller, cache_info, clear_cache, wave
         ])
         .run(tauri::generate_context!())
         .expect("error while running Debridr");

@@ -165,6 +165,9 @@ pub struct SampleIndex {
     pub entries: Vec<SampleEntry>,
     pub used_by: HashMap<u32, Vec<u32>>,
     pub project_names: Vec<String>,
+    /// Modification time and "older than the threshold" flag per project id.
+    pub project_mtimes: Vec<u64>,
+    pub project_old: Vec<bool>,
     pub roots: Vec<u32>,
     pub nodes: Vec<DirNode>,
     pub node_by_key: HashMap<String, u32>,
@@ -273,6 +276,7 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
     let mut fam_users: Vec<BTreeSet<String>> = vec![BTreeSet::new(); families.len()];
     let mut project_reports: Vec<ProjectReport> = Vec::new();
     let mut proj_names: Vec<String> = Vec::new();
+    let mut proj_mtimes: Vec<u64> = Vec::new();
     let mut proj_is_old: Vec<bool> = Vec::new();
     let mut proj_dirs_lower: HashSet<String> = HashSet::new();
     // Folders of files we could not read at all: keep everything in them.
@@ -339,6 +343,7 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
         }
         proj_names.push(pname.clone());
         proj_is_old.push(old);
+        proj_mtimes.push(pf.mtime);
         if is_shown {
             plist.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
             project_reports.push(ProjectReport { id: project_reports.len(), name: pf.name.clone(), daw: pf.daw, path: pf.path.to_string_lossy().into_owned(),
@@ -434,7 +439,9 @@ pub fn run(s: &Settings, progress: &(dyn Fn(Progress) + Sync)) -> Analysis {
     }
     tm.analysis_ms = t.elapsed().as_millis();
     let root_paths: Vec<String> = s.sample_dirs.iter().map(|p| slash(&p.to_string_lossy()).trim_end_matches('/').to_string()).collect();
-    let samples = SampleIndex::build(entries, used_by, proj_names, &root_paths);
+    let mut samples = SampleIndex::build(entries, used_by, proj_names, &root_paths);
+    samples.project_mtimes = proj_mtimes;
+    samples.project_old = proj_is_old.clone();
     Analysis { report: Report { plugins: plugin_reports, projects: project_reports, samples: summary, timings: tm, warnings, unreadable }, samples, stamps }
 }
 
@@ -469,7 +476,10 @@ pub struct Child {
 pub struct Listing { pub items: Vec<Child>, pub hidden_files: u64, pub parent: Option<String> }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct FileInfo { pub idx: u32, pub path: String, pub name: String, pub size: u64, pub mtime: u64, pub state: UsageState, pub by_name: bool, pub used_by: Vec<String> }
+pub struct FileInfo { pub idx: u32, pub path: String, pub name: String, pub size: u64, pub mtime: u64, pub state: UsageState, pub by_name: bool, pub used_by: Vec<String>, pub projects: Vec<ProjectUse> }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectUse { pub name: String, pub mtime: u64, pub old: bool }
 
 /// Max file rows sent for one folder; the rest are summarised.
 pub const MAX_FILE_ROWS: usize = 3000;
@@ -529,7 +539,7 @@ impl SampleIndex {
             let mut n = Some(e.node);
             while let Some(id) = n { nodes[id as usize].agg.apply(e, 1); n = nodes[id as usize].parent; }
         }
-        Self { entries, used_by, project_names, roots: root_ids, nodes, node_by_key }
+        Self { entries, used_by, project_names, project_mtimes: vec![], project_old: vec![], roots: root_ids, nodes, node_by_key }
     }
 
     pub fn fs_path(&self, idx: u32) -> PathBuf {
@@ -607,7 +617,12 @@ impl SampleIndex {
     pub fn file_info(&self, idx: u32) -> FileInfo {
         let e = &self.entries[idx as usize];
         let used_by = self.used_by.get(&idx).map(|v| v.iter().map(|&p| self.project_names[p as usize].clone()).collect()).unwrap_or_default();
-        FileInfo { idx, path: e.slash.clone(), name: e.slash.rsplit('/').next().unwrap_or("").to_string(), size: e.size, mtime: e.mtime, state: e.state, by_name: e.by_name, used_by }
+        let projects = self.used_by.get(&idx).map(|v| v.iter().map(|&p| ProjectUse {
+            name: self.project_names[p as usize].clone(),
+            mtime: self.project_mtimes.get(p as usize).copied().unwrap_or(0),
+            old: self.project_old.get(p as usize).copied().unwrap_or(false),
+        }).collect()).unwrap_or_default();
+        FileInfo { idx, path: e.slash.clone(), name: e.slash.rsplit('/').next().unwrap_or("").to_string(), size: e.size, mtime: e.mtime, state: e.state, by_name: e.by_name, used_by, projects }
     }
 
     /// Largest files with a given state, optionally under a directory.

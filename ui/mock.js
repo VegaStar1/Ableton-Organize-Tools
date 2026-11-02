@@ -53,7 +53,7 @@
   const state = { gone: new Set(), trash: [], settings: null, cache: 38 * MB };
   const roots = ['D:/Samples'];
   const sub = (e) => e.slash;
-  const info = (i) => { const e = files[i]; return { idx: i, path: e.slash, name: e.slash.split('/').pop(), size: e.size, mtime: 0, state: e.state, by_name: false, used_by: e.by }; };
+  const info = (i) => { const e = files[i]; return { idx: i, path: e.slash, name: e.slash.split('/').pop(), size: e.size, mtime: 0, state: e.state, by_name: false, used_by: e.by, projects: e.by.map((n, k) => ({ name: n, mtime: 1700000000 - k * 86400 * 300, old: e.state === 'oldonly' })) }; };
   function children(dir) {
     const prefix = dir ? dir.replace(/\/$/, '') + '/' : 'D:/Samples/';
     const map = new Map();

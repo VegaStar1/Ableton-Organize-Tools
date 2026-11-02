@@ -11,8 +11,15 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// The sample index stores paths with forward slashes; Explorer and the
+/// Properties window only understand backslashes.
+pub fn native(path: &Path) -> std::path::PathBuf {
+    if cfg!(windows) { std::path::PathBuf::from(path.to_string_lossy().replace('/', "\\")) } else { path.to_path_buf() }
+}
+
 /// Show a file or folder selected in Explorer / Finder.
 pub fn reveal(path: &Path) -> Result<()> {
+    let path = &native(path);
     let target = if path.exists() { path.to_path_buf() } else {
         path.ancestors().find(|p| p.exists()).map(|p| p.to_path_buf()).ok_or_else(|| Error::Msg("Путь не найден".into()))?
     };
@@ -41,6 +48,7 @@ pub fn web_search(query: &str, images: bool) -> Result<()> {
 
 /// Open the system "Properties" window for a file or folder.
 pub fn show_properties(path: &Path) -> Result<()> {
+    let path = &native(path);
     if !path.exists() { return Err(Error::Msg("Файл не найден".into())); }
     #[cfg(windows)]
     {
@@ -184,5 +192,14 @@ mod tests {
         assert_eq!(split_command("\"C:\\a b\\unins000.exe\" /S"), ("C:\\a b\\unins000.exe".into(), "/S".into()));
         assert_eq!(split_command("MsiExec.exe /I{ABC}"), ("MsiExec.exe".into(), "/I{ABC}".into()));
         assert_eq!(split_command("C:\\x\\uninst.exe"), ("C:\\x\\uninst.exe".into(), "".into()));
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    #[test]
+    fn native_paths() {
+        let p = super::native(std::path::Path::new("D:/Samples/Kick 01.wav"));
+        if cfg!(windows) { assert_eq!(p.to_string_lossy(), "D:\\Samples\\Kick 01.wav"); } else { assert_eq!(p.to_string_lossy(), "D:/Samples/Kick 01.wav"); }
     }
 }
